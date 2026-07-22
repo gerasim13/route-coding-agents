@@ -14,7 +14,9 @@ Antigravity is deliberately excluded from automatic routing because Google prohi
 ## Install
 
 ```bash
-DISABLE_TELEMETRY=1 npx skills add gerasim13/route-coding-agents -g --all
+DISABLE_TELEMETRY=1 npx skills add gerasim13/route-coding-agents \
+  --skill route-coding-agents --global \
+  --agent claude-code codex opencode warp --yes
 ```
 
 The skill contains no credentials. Local provider configuration remains under `~/.config/ai-coding-router/` and must not be committed.
