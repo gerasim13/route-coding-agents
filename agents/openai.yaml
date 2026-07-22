@@ -1,0 +1,4 @@
+interface:
+  display_name: "Route Coding Agents"
+  short_description: "Route coding work by cost, risk, and model strength"
+  default_prompt: "Use $route-coding-agents to classify this task, choose the cheapest adequate worker, enforce scope and budget gates, and verify the result."

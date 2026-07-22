@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+
+set -u
+set -o pipefail
+
+router_home="${AI_ROUTER_HOME:-$HOME/.config/ai-coding-router}"
+private_config="${AI_ROUTER_PRIVATE_CONFIG:-$router_home/providers.private.json}"
+opencode_config="${AI_ROUTER_OPENCODE_CONFIG:-$router_home/opencode.json}"
+key_dir="${AI_ROUTER_KEY_DIR:-$router_home/keys}"
+network=false
+failures=0
+
+[[ "${1:-}" == '--network' ]] && network=true
+
+pass() { printf 'PASS %s\n' "$1"; }
+fail() { printf 'FAIL %s\n' "$1"; failures=$((failures + 1)); }
+skip() { printf 'SKIP %s\n' "$1"; }
+
+for command_name in jq opencode codex; do
+  if command -v "$command_name" >/dev/null 2>&1; then
+    pass "command $command_name"
+  else
+    fail "command $command_name missing"
+  fi
+done
+
+if [[ -r "$private_config" ]] && jq empty "$private_config" >/dev/null 2>&1; then
+  pass 'private config readable and valid JSON'
+else
+  fail 'private config missing or invalid'
+fi
+
+if [[ -r "$opencode_config" ]] && jq empty "$opencode_config" >/dev/null 2>&1; then
+  pass 'OpenCode config readable and valid JSON'
+else
+  fail 'OpenCode config missing or invalid'
+fi
+
+if [[ -d "$key_dir" ]]; then
+  pass 'key directory exists'
+else
+  fail 'key directory missing'
+fi
+
+for key_name in extra_litellm minimax deepseek openrouter; do
+  key_path="$key_dir/$key_name"
+  if [[ -s "$key_path" ]]; then
+    pass "key file $key_name"
+  else
+    fail "key file $key_name missing or empty"
+  fi
+done
+
+if command -v opencode >/dev/null 2>&1 && [[ -r "$opencode_config" ]]; then
+  for provider in router_litellm router_minimax router_deepseek router_openrouter; do
+    if OPENCODE_CONFIG="$opencode_config" opencode models "$provider" >/dev/null 2>&1; then
+      pass "OpenCode provider $provider"
+    else
+      fail "OpenCode provider $provider"
+    fi
+  done
+fi
+
+if codex login status 2>&1 | grep -q 'Logged in'; then
+  pass 'Codex authenticated'
+else
+  fail 'Codex authentication'
+fi
+
+if command -v claude >/dev/null 2>&1; then
+  if claude mcp get codex 2>/dev/null | grep -q 'Connected'; then
+    pass 'Claude Codex MCP connected'
+  else
+    fail 'Claude Codex MCP not connected'
+  fi
+else
+  skip 'Claude not installed'
+fi
+
+if [[ "$network" == true && -r "$private_config" ]]; then
+  script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+  for route in extra_litellm:corporate-pro minimax:minimax deepseek:cheap openrouter:openrouter-cheap; do
+    provider="${route%%:*}"
+    model_alias="${route#*:}"
+    enabled=$(jq -r --arg provider "$provider" '.[$provider].enabled // false' "$private_config")
+    [[ "$enabled" == true ]] || { skip "$provider disabled"; continue; }
+    if "$script_dir/router-check" --fresh "$model_alias" >/dev/null; then
+      pass "$provider exact model availability"
+    else
+      fail "$provider exact model availability"
+    fi
+  done
+else
+  skip 'network checks (use --network)'
+fi
+
+skip 'Antigravity intentionally excluded by policy'
+
+if ((failures > 0)); then
+  printf 'RESULT failures=%d\n' "$failures"
+  exit 1
+fi
+
+printf 'RESULT ok\n'
