@@ -59,7 +59,7 @@ existing workflow command as an expert fast path.
 ### Adaptive entry
 
 ```text
-/ai-router:start <rough or precise software goal>
+/ai-router:start-workflow <rough or precise software goal>
 ```
 
 The command owns the planning lifecycle. It may inspect, dispatch discovery
@@ -347,7 +347,7 @@ workflow ID. It stores:
 It does not duplicate secrets, full prompts, or repository source. Large raw
 test logs remain local artifacts with rotation.
 
-When `/ai-router:start` finds unfinished state in the current worktree, it
+When `/ai-router:start-workflow` finds unfinished state in the current worktree, it
 offers to resume. It compares the saved fingerprint with current files:
 
 - matching state continues from the incomplete node;
@@ -374,7 +374,7 @@ Workflow itself resumes across Claude sessions.
 
 | Component | Responsibility |
 |---|---|
-| Adaptive Controller | `/ai-router:start`, state transitions, user questions |
+| Adaptive Controller | `/ai-router:start-workflow`, state transitions, user questions |
 | Local Inspector | Non-generating repository and test discovery |
 | Discovery Router | Bounded tasks and tier selection |
 | Planning Coordinator | Frontier planner and independent critic |
@@ -503,7 +503,7 @@ and manual.
 
 The feature is complete when:
 
-1. `/ai-router:start` supports the accepted adaptive lifecycle.
+1. `/ai-router:start-workflow` supports the accepted adaptive lifecycle.
 2. Local inspection can bypass unnecessary routed discovery.
 3. Planning questions resume the same persisted state.
 4. Two independent frontier providers gate every final plan.

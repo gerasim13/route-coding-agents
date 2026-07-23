@@ -35,10 +35,10 @@ Start a new Claude session, then run:
 
 ```text
 /ai-router:doctor fresh
-/ai-router:start <rough software goal>
+/ai-router:start-workflow <rough software goal>
 ```
 
-`/ai-router:start` first performs a free local inspection, routes only missing
+`/ai-router:start-workflow` first performs a free local inspection, routes only missing
 discovery, asks only material questions, and sends the final plan through an
 independent frontier critic. The accepted plan appears before Claude's single
 native Workflow approval card. Use `/ai-router:workflow <precise software task>`

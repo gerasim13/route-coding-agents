@@ -219,10 +219,10 @@ class PlanValidationTests(unittest.TestCase):
 
 class DocumentationTests(unittest.TestCase):
     def test_activation_command_is_identical_in_readme_and_skills(self) -> None:
-        exact_command = "/ai-router:start <rough software goal>"
+        exact_command = "/ai-router:start-workflow <rough software goal>"
         readme = (PLUGIN_ROOT.parents[1] / "README.md").read_text(encoding="utf-8")
         portable_skill = (PLUGIN_ROOT.parents[1] / "SKILL.md").read_text(encoding="utf-8")
-        start_skill = (PLUGIN_ROOT / "claude-skills" / "start" / "SKILL.md").read_text(encoding="utf-8")
+        start_skill = (PLUGIN_ROOT / "claude-skills" / "start-workflow" / "SKILL.md").read_text(encoding="utf-8")
         self.assertIn(exact_command, readme)
         self.assertIn(exact_command, portable_skill)
         self.assertIn(f'argument-hint: "<rough software goal>"', start_skill)

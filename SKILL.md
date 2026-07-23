@@ -10,7 +10,7 @@ Use one supervisor to plan a graph of bounded workers and independent verifiers.
 ## Prefer the Claude plugin
 
 When running in Claude Code/Desktop with the `ai-router` plugin installed,
-invoke `/ai-router:start <rough software goal>`. It performs adaptive discovery,
+invoke `/ai-router:start-workflow <rough software goal>`. It performs adaptive discovery,
 material clarification, and independent frontier planning before compiling one
 native Dynamic Workflow where every model call, deterministic check,
 diagnostician, verifier, repair, and replan is visible. Inspect it through

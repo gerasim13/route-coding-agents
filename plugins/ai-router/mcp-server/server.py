@@ -324,7 +324,7 @@ def dispatch(request: dict[str, Any]) -> dict[str, Any] | None:
         result = {
             "protocolVersion": request.get("params", {}).get("protocolVersion", "2024-11-05"),
             "capabilities": {"tools": {"listChanged": False}},
-            "serverInfo": {"name": "ai-router", "version": "0.5.0"},
+            "serverInfo": {"name": "ai-router", "version": "0.5.1"},
         }
     elif method == "ping":
         result = {}

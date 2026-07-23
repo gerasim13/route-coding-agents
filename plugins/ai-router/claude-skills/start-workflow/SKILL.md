@@ -1,6 +1,6 @@
 ---
-name: start
-description: Adaptively inspect, discover, plan, critique, and execute a rough software goal as visible Claude agents plus one native Dynamic Workflow. Use only when the user explicitly invokes /ai-router:start.
+name: start-workflow
+description: Adaptively inspect, discover, plan, critique, and execute a rough software goal as visible Claude agents plus one native Dynamic Workflow. Use only when the user explicitly invokes /ai-router:start-workflow.
 argument-hint: "<rough software goal>"
 disable-model-invocation: true
 ---
