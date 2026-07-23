@@ -75,6 +75,7 @@ ROLES = {
     "final-gate",
     "discovery",
     "planner",
+    "plan-griller",
     "plan-critic",
     "diagnostician",
     "test-intent-verifier",
@@ -190,8 +191,8 @@ def validate_plan(plan: Any, *, check_directory: bool = True) -> dict[str, Any]:
     if not isinstance(plan, dict):
         raise PlanValidationError(["plan must be an object"])
 
-    if plan.get("schema_version") != 3:
-        errors.append("schema_version must be 3")
+    if plan.get("schema_version") != 4:
+        errors.append("schema_version must be 4")
     workflow_id = plan.get("workflow_id")
     if not isinstance(workflow_id, str) or not ID_RE.fullmatch(workflow_id):
         errors.append("workflow_id must match [A-Za-z0-9][A-Za-z0-9._-]{0,63}")
@@ -224,6 +225,69 @@ def validate_plan(plan: Any, *, check_directory: bool = True) -> dict[str, Any]:
         errors.append("planning.discovery_performed must be boolean")
     assumptions = _string_list(planning.get("assumptions", []), "planning.assumptions", errors)
     del assumptions
+    grill = planning.get("grill")
+    if not isinstance(grill, dict):
+        errors.append("planning.grill must be an object")
+        grill = {}
+    grill_level = grill.get("level")
+    if grill_level not in COMPLEXITY_LEVELS:
+        errors.append("planning.grill.level must be routine, strong, or frontier")
+    grill_required = grill.get("required")
+    if not isinstance(grill_required, bool):
+        errors.append("planning.grill.required must be boolean")
+        grill_required = False
+    grill_signals = _string_list(
+        grill.get("signals", []), "planning.grill.signals", errors
+    )
+    grill_routes = _string_list(
+        grill.get("routes", []), "planning.grill.routes", errors
+    )
+    grill_roles = _string_list(
+        grill.get("roles", []), "planning.grill.roles", errors
+    )
+    open_grill_blockers = _string_list(
+        grill.get("open_blockers", []), "planning.grill.open_blockers", errors
+    )
+    grill_rounds = grill.get("rounds")
+    if not isinstance(grill_rounds, int) or isinstance(grill_rounds, bool) or grill_rounds < 0:
+        errors.append("planning.grill.rounds must be a non-negative integer")
+        grill_rounds = 0
+    _validate_route_ladder(grill_routes, "planning.grill.routes", errors)
+    if len(grill_roles) != len(grill_routes):
+        errors.append("planning.grill.roles must contain one role per grill route")
+    if len(set(grill_roles)) != len(grill_roles):
+        errors.append("planning.grill.roles must be distinct")
+    if grill_required:
+        if grill_level == "routine":
+            errors.append("required planning.grill.level must be strong or frontier")
+        if not grill_signals:
+            errors.append("planning.grill.signals must explain why grill is required")
+        if not grill_routes:
+            errors.append("planning.grill.routes must not be empty when grill is required")
+        if grill_rounds < 1:
+            errors.append("planning.grill.rounds must be at least 1 when grill is required")
+        if open_grill_blockers:
+            errors.append("planning.grill.open_blockers must be empty before execution")
+        if grill.get("verdict") != "PASS":
+            errors.append("planning.grill.verdict must be PASS before execution")
+        if grill_level == "strong" and all(route in ROUTES for route in grill_routes):
+            if any(ROUTES[route].capability < 2 for route in grill_routes):
+                errors.append("planning.grill.routes must be strong capability or higher")
+        if grill_level == "frontier" and all(route in ROUTES for route in grill_routes):
+            if len(grill_routes) < 2:
+                errors.append("frontier grill requires at least two routes")
+            if any(ROUTES[route].capability < 3 for route in grill_routes):
+                errors.append("frontier grill routes must all use frontier capability")
+            providers = {ROUTES[route].provider for route in grill_routes}
+            if len(providers) < 2:
+                errors.append("frontier grill routes must use independent providers")
+    else:
+        if grill_level != "routine":
+            errors.append("planning.grill.required must be true for strong or frontier grill")
+        if grill_signals or grill_routes or grill_roles or grill_rounds != 0 or open_grill_blockers:
+            errors.append("skipped planning.grill must not contain work or blockers")
+        if grill.get("verdict") != "SKIPPED":
+            errors.append("skipped planning.grill.verdict must be SKIPPED")
     planner_route = planning.get("planner_route")
     critic_route = planning.get("critic_route")
     for field, route in (("planning.planner_route", planner_route), ("planning.critic_route", critic_route)):
@@ -234,6 +298,14 @@ def validate_plan(plan: Any, *, check_directory: bool = True) -> dict[str, Any]:
     if planner_route in ROUTES and critic_route in ROUTES:
         if ROUTES[planner_route].provider == ROUTES[critic_route].provider:
             errors.append("planning planner and critic must use independent providers")
+    if grill_required and planner_route in ROUTES and grill_routes and all(
+        route in ROUTES for route in grill_routes
+    ):
+        if not any(
+            ROUTES[route].provider != ROUTES[planner_route].provider
+            for route in grill_routes
+        ):
+            errors.append("planning grill must include a provider independent from the planner")
     if planning.get("critic_verdict") != "PASS":
         errors.append("planning.critic_verdict must be PASS before execution")
 
@@ -254,6 +326,7 @@ def validate_plan(plan: Any, *, check_directory: bool = True) -> dict[str, Any]:
     task_ids: set[str] = set()
     dependencies: dict[str, list[str]] = {}
     premium_used: set[str] = set()
+    task_complexities: list[int] = []
 
     for index, task in enumerate(tasks):
         prefix = f"tasks[{index}]"
@@ -277,6 +350,8 @@ def validate_plan(plan: Any, *, check_directory: bool = True) -> dict[str, Any]:
         complexity = task.get("complexity")
         if complexity not in COMPLEXITY_LEVELS:
             errors.append(f"{prefix}.complexity must be routine, strong, or frontier")
+        else:
+            task_complexities.append(COMPLEXITY_LEVELS[complexity])
 
         deps = _string_list(task.get("dependencies", []), f"{prefix}.dependencies", errors)
         dependencies[task_id] = deps
@@ -368,6 +443,14 @@ def validate_plan(plan: Any, *, check_directory: bool = True) -> dict[str, Any]:
                 errors.append(f"task {task_id} depends on unknown task {dependency}")
     if _has_cycle(task_ids, dependencies):
         errors.append("task dependencies contain a cycle")
+    if grill_level in COMPLEXITY_LEVELS and task_complexities:
+        required_level = max(task_complexities)
+        if COMPLEXITY_LEVELS[grill_level] < required_level:
+            errors.append(
+                "planning.grill.level cannot be lower than the highest task complexity"
+            )
+        if required_level >= 2 and not grill_required:
+            errors.append("strong or frontier tasks require a completed planning grill")
 
     final_gate = plan.get("final_gate")
     if not isinstance(final_gate, dict):
@@ -433,7 +516,7 @@ def validate_plan(plan: Any, *, check_directory: bool = True) -> dict[str, Any]:
 
     premium_used.update(
         route
-        for route in (planner_route, critic_route)
+        for route in (planner_route, critic_route, *grill_routes)
         if route in ROUTES and ROUTES[route].premium
     )
 
@@ -478,7 +561,10 @@ def _atomic_json(path: Path, value: Any) -> None:
 
 def plan_summary(plan: dict[str, Any], plan_id: str) -> dict[str, Any]:
     tasks = []
+    deterministic_check_nodes = len(plan["final_gate"]["test_plan"]["regression"])
     for task in plan["tasks"]:
+        deterministic_check_nodes += len(task["test_plan"]["targeted"])
+        deterministic_check_nodes += len(task["test_plan"]["affected"])
         tasks.append(
             {
                 "id": task["id"],
@@ -499,6 +585,9 @@ def plan_summary(plan: dict[str, Any], plan_id: str) -> dict[str, Any]:
                 "test_plan": task["test_plan"],
             }
         )
+    grill = plan["planning"]["grill"]
+    planning_agents = 2 + len(grill["routes"]) * grill["rounds"]
+    execution_agents = len(tasks) * 2 + deterministic_check_nodes + 1
     return {
         "plan_id": plan_id,
         "workflow_id": plan["workflow_id"],
@@ -506,6 +595,12 @@ def plan_summary(plan: dict[str, Any], plan_id: str) -> dict[str, Any]:
         "working_directory": plan["working_directory"],
         "planning": {
             **plan["planning"],
+            "grill": {
+                **plan["planning"]["grill"],
+                "route_details": [
+                    route_summary(route) for route in plan["planning"]["grill"]["routes"]
+                ],
+            },
             "planner": route_summary(plan["planning"]["planner_route"]),
             "critic": route_summary(plan["planning"]["critic_route"]),
         },
@@ -516,7 +611,10 @@ def plan_summary(plan: dict[str, Any], plan_id: str) -> dict[str, Any]:
         "final_gate_diagnosis_ladder": [
             route_summary(route) for route in plan["final_gate"]["diagnosis_routes"]
         ],
-        "minimum_visible_model_agents": len(tasks) * 2 + 1,
+        "minimum_planning_model_agents": planning_agents,
+        "minimum_execution_visible_agents": execution_agents,
+        "minimum_visible_agents": planning_agents + execution_agents,
+        "minimum_visible_model_agents": execution_agents,
         "premium_routes": plan.get("approval", {}).get("premium_routes", []),
         "max_api_budget_usd": plan.get("approval", {}).get("max_api_budget_usd"),
     }

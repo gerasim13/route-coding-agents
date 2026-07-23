@@ -8,7 +8,7 @@
     {
       "name": "ai-router",
       "source": "./plugins/ai-router",
-      "description": "Plan, run, verify, and escalate coding work across Claude, Codex, LiteLLM, MiniMax, DeepSeek, and OpenRouter.",
+      "description": "Plan, adversarially grill, run, verify, and escalate coding work across Claude, Codex, LiteLLM, MiniMax, DeepSeek, and OpenRouter.",
       "category": "Development",
       "tags": ["agents", "routing", "workflow", "cost-control"]
     }

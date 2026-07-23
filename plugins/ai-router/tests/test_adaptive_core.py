@@ -105,6 +105,29 @@ class AdaptiveSessionTests(unittest.TestCase):
             )
             self.assertEqual(list((state / "leases").glob("*.workflow.json")), [])
 
+    def test_complex_planning_can_grill_ask_and_resume_before_critique(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repo = root / "repo"
+            repo.mkdir()
+            init_repo(repo)
+            state = root / "state"
+            session = adaptive_core.start_session("Design a risky migration", str(repo), state)
+
+            for next_state in (
+                "PLANNING",
+                "GRILLING",
+                "AWAITING_USER_DECISION",
+                "GRILLING",
+                "CRITIQUING",
+                "READY_FOR_APPROVAL",
+            ):
+                updated = adaptive_core.checkpoint_session(
+                    session["session_id"], next_state, next_state, {}, state
+                )
+
+            self.assertEqual(updated["state"], "READY_FOR_APPROVAL")
+
 
 class WorkspaceInspectionTests(unittest.TestCase):
     def test_fingerprint_changes_with_tracked_content(self) -> None:

@@ -3,6 +3,7 @@
 AI Router turns multi-model coding delegation into a visible Claude Code Dynamic Workflow:
 
 - one adaptive entry point for rough tasks, discovery, questions, and planning;
+- risk-gated adversarial grill for strong/frontier plans, skipped for routine work;
 - two independent frontier planning agents before execution;
 - one route plan and one native approval card;
 - one inspectable workflow agent for every model call;
@@ -38,16 +39,18 @@ Start a new Claude session, then run:
 /ai-router:start-workflow <rough software goal>
 ```
 
-`/ai-router:start-workflow` first performs a free local inspection, routes only missing
-discovery, asks only material questions, and sends the final plan through an
-independent frontier critic. The accepted plan appears before Claude's single
-native Workflow approval card. Use `/ai-router:workflow <precise software task>`
-as the non-interactive expert fast path.
+`/ai-router:start-workflow` first performs a free local inspection, routes only
+missing discovery, asks only material questions, grills strong/frontier drafts,
+and sends the revised plan through an independent frontier critic. Routine
+plans skip grill. The accepted plan appears before Claude's single native
+Workflow approval card. Use `/ai-router:workflow <precise software task>` as
+the non-interactive expert fast path.
 
-While execution runs, use `/workflows` or the Desktop Background Tasks pane to
-inspect workers, deterministic checks, diagnosticians, verifiers, repairs,
-prompts, tool calls, results, time, and Claude tokens. Use `/ai-router:usage`
-for routed external usage and known API cost.
+Before approval, discovery, planner, grillers, and critic appear as separate
+visible Agent nodes in the main session and Desktop Background Tasks. After
+approval, use `/workflows` to inspect workers, deterministic checks,
+diagnosticians, verifiers, repairs, prompts, results, time, and Claude tokens.
+Use `/ai-router:usage` for routed external usage and known API cost.
 
 Claude's auto mode may accept the Workflow card through its classifier. Switch out of auto mode before launch when you want a mandatory manual click.
 

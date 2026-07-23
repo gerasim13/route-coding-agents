@@ -1,4 +1,4 @@
 interface:
   display_name: "Route Coding Agents"
-  short_description: "Run adaptive, zero-tolerance multi-model workflows"
-  default_prompt: "Use $route-coding-agents to inspect cheaply, plan with independent frontier agents, run visible deterministic checks and model workers, diagnose every failure, and finish only when the mandatory regression is green."
+  short_description: "Run grilled, zero-tolerance multi-model workflows"
+  default_prompt: "Use $route-coding-agents to inspect cheaply, risk-gate and adversarially grill complex plans, use independent frontier planning, run visible checks and workers, diagnose every failure, and finish only when mandatory regression is green."

@@ -77,6 +77,7 @@ TOOLS = [
                         "DISCOVERING",
                         "AWAITING_USER_DECISION",
                         "PLANNING",
+                        "GRILLING",
                         "CRITIQUING",
                         "READY_FOR_APPROVAL",
                         "EXECUTING",
@@ -182,6 +183,7 @@ TOOLS = [
                         "final-gate",
                         "discovery",
                         "planner",
+                        "plan-griller",
                         "plan-critic",
                         "diagnostician",
                         "test-intent-verifier",
@@ -324,7 +326,7 @@ def dispatch(request: dict[str, Any]) -> dict[str, Any] | None:
         result = {
             "protocolVersion": request.get("params", {}).get("protocolVersion", "2024-11-05"),
             "capabilities": {"tools": {"listChanged": False}},
-            "serverInfo": {"name": "ai-router", "version": "0.5.1"},
+            "serverInfo": {"name": "ai-router", "version": "0.6.0"},
         }
     elif method == "ping":
         result = {}

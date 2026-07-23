@@ -24,7 +24,7 @@ SPEC.loader.exec_module(router_core)
 
 def valid_plan(working_directory: str) -> dict:
     return {
-        "schema_version": 3,
+        "schema_version": 4,
         "workflow_id": "test-workflow",
         "objective": "Implement and verify a bounded change",
         "working_directory": working_directory,
@@ -36,6 +36,16 @@ def valid_plan(working_directory: str) -> dict:
             "critic_route": "claude-opus",
             "critic_verdict": "PASS",
             "assumptions": [],
+            "grill": {
+                "level": "routine",
+                "required": False,
+                "signals": [],
+                "routes": [],
+                "roles": [],
+                "rounds": 0,
+                "open_blockers": [],
+                "verdict": "SKIPPED",
+            },
         },
         "approval": {
             "premium_routes": [],
@@ -104,6 +114,70 @@ class PlanValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(router_core.PlanValidationError, "critic_verdict"):
             router_core.validate_plan(plan)
 
+    def test_strong_plan_requires_completed_adversarial_grill(self) -> None:
+        plan = valid_plan(self.directory)
+        task = plan["tasks"][0]
+        task["complexity"] = "strong"
+        task["routes"] = ["corporate-pro", "codex-sol"]
+        task["verifier_routes"] = ["codex-terra", "claude-opus"]
+        task["test_intent_verifier_routes"] = ["codex-terra", "claude-opus"]
+        with self.assertRaisesRegex(router_core.PlanValidationError, "grill"):
+            router_core.validate_plan(plan)
+
+        plan["planning"]["grill"] = {
+            "level": "strong",
+            "required": True,
+            "signals": ["multi-file semantic change"],
+            "routes": ["codex-terra"],
+            "roles": ["assumption-breaker"],
+            "rounds": 1,
+            "open_blockers": [],
+            "verdict": "PASS",
+        }
+        with self.assertRaisesRegex(router_core.PlanValidationError, "independent from the planner"):
+            router_core.validate_plan(plan)
+
+        plan["planning"]["grill"]["routes"] = ["claude-sonnet"]
+        self.assertIs(router_core.validate_plan(plan), plan)
+
+    def test_frontier_grill_requires_two_independent_frontier_providers(self) -> None:
+        plan = valid_plan(self.directory)
+        task = plan["tasks"][0]
+        task["complexity"] = "frontier"
+        task["routes"] = ["codex-sol"]
+        task["verifier_routes"] = ["claude-opus"]
+        task["test_intent_verifier_routes"] = ["claude-opus"]
+        plan["planning"]["grill"] = {
+            "level": "frontier",
+            "required": True,
+            "signals": ["public contract and concurrency"],
+            "routes": ["codex-sol", "codex-high"],
+            "roles": ["architecture-breaker", "failure-mode-breaker"],
+            "rounds": 1,
+            "open_blockers": [],
+            "verdict": "PASS",
+        }
+        with self.assertRaisesRegex(router_core.PlanValidationError, "independent providers"):
+            router_core.validate_plan(plan)
+
+        plan["planning"]["grill"]["routes"] = ["codex-sol", "claude-opus"]
+        self.assertIs(router_core.validate_plan(plan), plan)
+
+    def test_grill_cannot_pass_with_open_blockers(self) -> None:
+        plan = valid_plan(self.directory)
+        plan["planning"]["grill"] = {
+            "level": "strong",
+            "required": True,
+            "signals": ["architecture risk"],
+            "routes": ["claude-sonnet"],
+            "roles": ["architecture-breaker"],
+            "rounds": 1,
+            "open_blockers": ["persistence rollback is undefined"],
+            "verdict": "PASS",
+        }
+        with self.assertRaisesRegex(router_core.PlanValidationError, "open_blockers"):
+            router_core.validate_plan(plan)
+
     def test_rejects_missing_test_pyramid_or_weak_diagnostician(self) -> None:
         plan = valid_plan(self.directory)
         plan["tasks"][0]["test_plan"]["affected"] = []
@@ -153,6 +227,30 @@ class PlanValidationTests(unittest.TestCase):
         plan["approval"]["premium_routes"] = ["kimi-k3"]
         plan["approval"]["max_api_budget_usd"] = 1.0
         router_core.validate_plan(plan)
+
+    def test_premium_grill_route_requires_explicit_budget_approval(self) -> None:
+        plan = valid_plan(self.directory)
+        task = plan["tasks"][0]
+        task["complexity"] = "frontier"
+        task["routes"] = ["codex-sol"]
+        task["verifier_routes"] = ["claude-opus"]
+        task["test_intent_verifier_routes"] = ["claude-opus"]
+        plan["planning"]["grill"] = {
+            "level": "frontier",
+            "required": True,
+            "signals": ["cross-system public contract"],
+            "routes": ["codex-sol", "kimi-k3"],
+            "roles": ["contract-breaker", "failure-mode-breaker"],
+            "rounds": 1,
+            "open_blockers": [],
+            "verdict": "PASS",
+        }
+        with self.assertRaisesRegex(router_core.PlanValidationError, "premium"):
+            router_core.validate_plan(plan)
+
+        plan["approval"]["premium_routes"] = ["kimi-k3"]
+        plan["approval"]["max_api_budget_usd"] = 1.0
+        self.assertIs(router_core.validate_plan(plan), plan)
 
     def test_rejects_openrouter_as_silent_primary(self) -> None:
         plan = valid_plan(self.directory)
@@ -215,6 +313,12 @@ class PlanValidationTests(unittest.TestCase):
         first_verifier = summary["tasks"][0]["verifier_ladder"][0]
         self.assertEqual(first_verifier["model"], "gpt-5.6-luna")
         self.assertEqual(first_verifier["effort"], "low")
+        self.assertEqual(summary["planning"]["grill"]["verdict"], "SKIPPED")
+        self.assertEqual(summary["minimum_planning_model_agents"], 2)
+        self.assertGreater(summary["minimum_execution_visible_agents"], 3)
+
+    def test_delegate_roles_include_plan_griller(self) -> None:
+        self.assertIn("plan-griller", router_core.ROLES)
 
 
 class DocumentationTests(unittest.TestCase):
@@ -617,6 +721,11 @@ class McpProtocolTests(unittest.TestCase):
                 "health",
             }.issubset(names)
         )
+        tools = {tool["name"]: tool for tool in listed["result"]["tools"]}
+        delegate_role_enum = tools["delegate"]["inputSchema"]["properties"]["role"]["enum"]
+        checkpoint_state_enum = tools["checkpoint_session"]["inputSchema"]["properties"]["next_state"]["enum"]
+        self.assertIn("plan-griller", delegate_role_enum)
+        self.assertIn("GRILLING", checkpoint_state_enum)
 
 
 if __name__ == "__main__":

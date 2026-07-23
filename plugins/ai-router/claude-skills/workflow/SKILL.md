@@ -1,6 +1,6 @@
 ---
 name: workflow
-description: Plan and execute a software task as a visible Claude Dynamic Workflow that routes work across Claude, Codex, corporate LiteLLM, MiniMax, DeepSeek, and OpenRouter; independently verifies every model result; and escalates failures to stronger models. Use only when the user explicitly invokes /ai-router:workflow.
+description: Plan, risk-gate and adversarially grill complex drafts, then execute a software task as a visible Claude Dynamic Workflow across Claude, Codex, corporate LiteLLM, MiniMax, DeepSeek, and OpenRouter with independent verification and escalation. Use only when the user explicitly invokes /ai-router:workflow.
 argument-hint: "<software task>"
 disable-model-invocation: true
 ---
@@ -21,7 +21,7 @@ This command is an execution contract, not optional advice:
 
 1. Inspect only enough repository context to split the objective into bounded tasks with real acceptance checks. Inspection is not task completion.
 2. Use ToolSearch to load the `ai-router` MCP `route_catalog`, `health`, `prepare_plan`, and `compile_workflow` tools.
-3. Even on this expert fast path, create two visible frontier planning agents from independent providers: one planner and one critic. Normally pair Claude Opus/high or Best/high with Codex Sol/high. The critic must return PASS before plan preparation. External planner or critic calls use a Haiku wrapper that calls `delegate` exactly once with `role=planner` or `role=plan-critic`.
+3. Even on this expert fast path, create two visible frontier planning agents from independent providers: one planner and one critic. Normally pair Claude Opus/high or Best/high with Codex Sol/high. Before the critic, risk-classify the draft: routine skips grill; strong work gets one strong-or-frontier adversarial griller; frontier, architecture, contracts, migrations, concurrency, security, cross-system changes, or unclear rollback get at least two frontier grill agents from independent providers. External grill agents call `delegate` exactly once with `role=plan-griller`. Resolve every blocking finding, revise the plan, and repeat grill before the final critic. The critic must return PASS before plan preparation. External planner or critic calls use a Haiku wrapper that calls `delegate` exactly once with `role=planner` or `role=plan-critic`.
 4. Choose routes by task complexity, not by always starting cheap:
    - routine: `claude-haiku`, `codex-luna`, `minimax`, or `cheap`;
    - strong: `corporate-pro`, `codex-terra`, or `claude-sonnet`;
@@ -51,7 +51,7 @@ Construct this exact plan shape:
 
 ```json
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "workflow_id": "short-kebab-id",
   "objective": "complete objective",
   "working_directory": "/absolute/current/worktree",
@@ -62,7 +62,17 @@ Construct this exact plan shape:
     "planner_route": "claude-opus",
     "critic_route": "codex-sol",
     "critic_verdict": "PASS",
-    "assumptions": []
+    "assumptions": [],
+    "grill": {
+      "level": "routine",
+      "required": false,
+      "signals": [],
+      "routes": [],
+      "roles": [],
+      "rounds": 0,
+      "open_blockers": [],
+      "verdict": "SKIPPED"
+    }
   },
   "approval": {
     "premium_routes": [],

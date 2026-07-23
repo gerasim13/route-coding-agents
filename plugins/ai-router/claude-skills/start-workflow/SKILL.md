@@ -1,6 +1,6 @@
 ---
 name: start-workflow
-description: Adaptively inspect, discover, plan, critique, and execute a rough software goal as visible Claude agents plus one native Dynamic Workflow. Use only when the user explicitly invokes /ai-router:start-workflow.
+description: Adaptively inspect, discover, plan, adversarially grill complex drafts, critique, and execute a rough software goal as visible Claude agents plus one native Dynamic Workflow. Use only when the user explicitly invokes /ai-router:start-workflow.
 argument-hint: "<rough software goal>"
 disable-model-invocation: true
 ---
@@ -13,7 +13,7 @@ execution.
 
 The main conversation is the interactive controller. It may inspect and ask a
 material question, but it must not implement the goal. Every model generation
-for discovery, planning, criticism, implementation, diagnosis, repair, or
+for discovery, planning, grilling, criticism, implementation, diagnosis, repair, or
 verification must be a separate visible agent. Local search, state updates, and
 deterministic checks are not model generations.
 
@@ -65,7 +65,7 @@ Discovery may run bounded baseline checks through `run_check`. Any failure found
 here is an active defect and must be included in the plan. “Pre-existing” is
 provenance only, never permission to skip it.
 
-## Require a frontier planner and critic
+## Plan, grill complex work, then critique
 
 Every final plan uses two explicit visible frontier agents from independent
 providers:
@@ -86,17 +86,52 @@ call `delegate` exactly once with `role=planner` or `role=plan-critic`. Planning
 may automatically use subscriptions and corporate LiteLLM. Paid APIs must stay
 inside the approved planning budget.
 
-Checkpoint `PLANNING`, run the planner, checkpoint `CRITIQUING`, and run the
-critic. A critic failure returns to a new planner revision and a new critic
-agent. Continue until `critic_verdict=PASS` or a real blocker exists.
+Checkpoint `PLANNING` and run the planner to produce a draft task graph. Before
+the final critic, classify grill level from the highest task complexity plus
+material risk:
 
-## Build RoutePlan v3
+- `routine`: no grill when paths, contracts, oracle, and rollback are clear;
+- `strong`: grill when work is multi-file, semantically coupled, or contains
+  meaningful ambiguity; use at least one separate strong-or-frontier agent;
+- `frontier`: use at least two frontier grill agents from independent providers
+  for architecture, public or persistence contracts, migrations, concurrency,
+  security, cross-system changes, destructive operations, unclear rollback, or
+  several interacting unknowns.
+
+Checkpoint `GRILLING` before dispatch. Give grill agents distinct roles chosen
+from `assumption-breaker`, `architecture-contract-breaker`,
+`failure-mode-test-breaker`, and `scope-operations-breaker`. Strong grill uses
+the most relevant role. Frontier grill normally runs two or three roles in
+parallel. Native Claude grill calls are read-only visible `Agent` nodes.
+External grill calls use a Haiku wrapper that calls `delegate` exactly once
+with `role=plan-griller`.
+
+Every griller returns a structured report with `verdict` (`PASS` or
+`CHALLENGE`), blocking findings, counterexamples, invalid assumptions, missing
+tests, scope/rollback concerns, material questions, and recommended plan
+changes. Grill the proposed design, not the wording of the plan.
+
+Deduplicate findings. Resolve repository-answerable challenges with bounded
+local inspection or discovery agents. For a material user decision, checkpoint
+`AWAITING_USER_DECISION`, ask one focused question, then return to `GRILLING`.
+Record minor decisions as assumptions. Any blocker causes a new planner
+revision followed by another grill round. Do not impose an arbitrary round
+limit; stop when no material blockers remain. Repeated identical challenges
+without new evidence or an available decision become a concrete `BLOCKED`
+result rather than an endless loop.
+
+After grill is `PASS` or legitimately `SKIPPED`, checkpoint `CRITIQUING` and run
+the independent frontier critic. A critic failure returns to `PLANNING`; a
+revised strong/frontier plan must pass grill again before another critic.
+Continue until `critic_verdict=PASS` or a real blocker exists.
+
+## Build RoutePlan v4
 
 Use this shape:
 
 ```json
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "workflow_id": "short-kebab-id",
   "objective": "complete objective",
   "working_directory": "/absolute/canonical/worktree",
@@ -107,7 +142,17 @@ Use this shape:
     "planner_route": "claude-opus",
     "critic_route": "codex-sol",
     "critic_verdict": "PASS",
-    "assumptions": []
+    "assumptions": [],
+    "grill": {
+      "level": "routine",
+      "required": false,
+      "signals": [],
+      "routes": [],
+      "roles": [],
+      "rounds": 0,
+      "open_blockers": [],
+      "verdict": "SKIPPED"
+    }
   },
   "approval": {
     "premium_routes": [],
@@ -150,6 +195,12 @@ Use this shape:
 Routing rules:
 
 - Initial route matches task complexity: routine=1, strong=2, frontier=3.
+- Grill level cannot be lower than the highest task complexity.
+- Strong and frontier work cannot execute with a skipped grill.
+- Strong grill uses a strong-or-frontier route. Frontier grill uses at least
+  two frontier routes from independent providers.
+- `grill.verdict=PASS` requires at least one completed round and no open
+  blockers. Routine skip uses `SKIPPED`, empty routes/roles, and zero rounds.
 - Worker, verifier, diagnosis, and test-intent ladders end at frontier.
 - Verifiers are at least as capable as workers and use an independent provider.
 - Corporate LiteLLM and Codex subscription are preferred when equally adequate,
@@ -167,9 +218,10 @@ Routing rules:
 ## Show one execution card
 
 Call `prepare_plan` and repair every validation error. Present its compact
-summary: assumptions, task graph, allowed paths, worker/verifier/diagnosis
-ladders with model and effort, targeted/affected/regression checks, planning
-usage, known API cost, premium routes, and budget.
+summary: assumptions, grill level/signals/roles/rounds, task graph, allowed
+paths, worker/verifier/diagnosis ladders with model and effort,
+targeted/affected/regression checks, planning usage, known API cost, premium
+routes, and budget.
 
 Checkpoint `READY_FOR_APPROVAL`, call `compile_workflow`, checkpoint
 `EXECUTING`, then immediately launch Claude's native `Workflow` tool with the
@@ -181,8 +233,10 @@ runner nodes are visible but non-generating. A failed check gets one isolated
 rerun, then a strong diagnosis. Weak-model failure escalates rather than
 stopping. Each next task resets to its planned initial tier.
 
-Tell the user that `/workflows` or Desktop Background Tasks shows every node.
-Do not poll or duplicate execution in the main conversation.
+Tell the user that planning and grill agents remain visible in the main session
+and Desktop Background Tasks, while `/workflows` shows every compiled execution
+node after approval. Do not poll or duplicate execution in the main
+conversation.
 
 ## Finish, amend, or resume
 

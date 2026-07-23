@@ -22,6 +22,8 @@ existing workflow command as an expert fast path.
   calls.
 - Clear tasks skip routed discovery; ambiguous tasks use bounded, visible,
   read-only discovery agents.
+- Strong and frontier drafts pass a risk-gated adversarial grill; routine work
+  does not pay this token cost.
 - Every final implementation plan is created by a frontier planner and checked
   by an independent frontier critic from another provider.
 - Only decisions that materially affect product behavior, architecture,
@@ -43,6 +45,8 @@ existing workflow command as an expert fast path.
 6. Require a completely green mandatory regression suite for `VERIFIED`.
 7. Persist compact state so interrupted work can continue without repeating
    successful discovery or checks.
+8. Challenge assumptions, architecture, failure modes, tests, scope, and
+   rollback before complex work reaches final plan criticism.
 
 ## Non-goals
 
@@ -74,6 +78,7 @@ Discovery required: yes
 Running 3 discovery agents…
 Waiting for one product decision…
 Planning with Claude Best…
+Grilling architecture and failure modes…
 Critiquing with Codex Sol…
 Plan ready.
 ```
@@ -112,17 +117,26 @@ flowchart TD
     F --> D
     E -- "No" --> G["Frontier planner"]
     C -- "Yes" --> G
-    G --> H["Independent frontier critic"]
-    H -- "Findings" --> G
-    H -- "Accepted" --> I["Show plan, checks, routes, and spend"]
-    I --> J["Native Workflow approval card"]
-    J --> K["Execution workflow"]
-    K --> L{"Mandatory regression suite green?"}
-    L -- "Yes" --> M["VERIFIED"]
-    L -- "No, within scope" --> N["Diagnose and repair"]
-    N --> K
-    L -- "No, outside scope" --> O["AWAITING_SCOPE_APPROVAL"]
-    O --> J
+    G --> H{"Risk-gated grill level"}
+    H -- "Routine" --> K["Independent frontier critic"]
+    H -- "Strong" --> I["One adversarial griller"]
+    H -- "Frontier/high risk" --> J["Two or more independent frontier grillers"]
+    I --> R{"Blocking findings or material question?"}
+    J --> R
+    R -- "Repository evidence" --> D
+    R -- "User decision" --> F
+    R -- "Revise" --> G
+    R -- "Resolved" --> K
+    K -- "Findings" --> G
+    K -- "Accepted" --> L["Show plan, checks, routes, and spend"]
+    L --> M["Native Workflow approval card"]
+    M --> N["Execution workflow"]
+    N --> O{"Mandatory regression suite green?"}
+    O -- "Yes" --> P["VERIFIED"]
+    O -- "No, within scope" --> Q["Diagnose and repair"]
+    Q --> N
+    O -- "No, outside scope" --> S["AWAITING_SCOPE_APPROVAL"]
+    S --> M
 ```
 
 ## Planning phases
@@ -169,9 +183,40 @@ The controller asks the user only when a decision materially changes:
 - implementation scope or risk.
 
 Answers available from the repository are not delegated to the user. Minor
-decisions become explicit assumptions.
+decisions become explicit assumptions. Grill findings use the same rule:
+challenge agents do not ask the user for facts that bounded inspection can
+establish.
 
-### 4. Frontier planning gate
+### 4. Risk-gated adversarial grill
+
+The frontier planner first produces a draft graph. The controller then
+classifies grill level from the highest task complexity and material risk:
+
+- `routine`: skip when paths, contracts, oracle, and rollback are clear;
+- `strong`: at least one separate strong-or-frontier griller for multi-file
+  coupling or meaningful ambiguity;
+- `frontier`: at least two frontier grill agents from independent providers for
+  architecture, public or persistence contracts, migrations, concurrency,
+  security, cross-system changes, destructive operations, unclear rollback, or
+  interacting unknowns.
+
+Grill agents receive distinct read-only roles such as assumption breaker,
+architecture/contract breaker, failure-mode/test breaker, and
+scope/operations breaker. They return blocking findings, counterexamples,
+invalid assumptions, missing tests, rollback or scope concerns, material
+questions, and recommended revisions.
+
+Repository-answerable challenges return to bounded discovery. Material user
+decisions are asked one at a time. All other blockers return to the frontier
+planner. Grill repeats without an arbitrary round cap until no material blocker
+remains. Repeated identical challenges without new evidence or an available
+decision become a concrete blocker rather than an infinite loop.
+
+This is deliberately separate from final plan criticism: grill tries to break
+the draft, while the critic validates the complete revised RoutePlan,
+verification independence, and budget.
+
+### 5. Frontier planning gate
 
 Every final plan, including a plan that skipped routed discovery, uses:
 
@@ -195,6 +240,7 @@ planner until the plan passes or a real blocker remains.
 | Bounded discovery | Routine | Strong |
 | Cross-file semantic discovery | Strong | Frontier |
 | Final planning | Frontier | Another frontier approach |
+| Plan grilling | Strong for strong work; multiple independent frontier agents for high risk | Planner revision or material question |
 | Plan criticism | Independent frontier | Planner revision |
 | Root-cause diagnosis | Strong | Frontier |
 | Precisely diagnosed mechanical repair | Routine | Strong or frontier |
@@ -377,7 +423,7 @@ Workflow itself resumes across Claude sessions.
 | Adaptive Controller | `/ai-router:start-workflow`, state transitions, user questions |
 | Local Inspector | Non-generating repository and test discovery |
 | Discovery Router | Bounded tasks and tier selection |
-| Planning Coordinator | Frontier planner and independent critic |
+| Planning Coordinator | Frontier planner, risk-gated grill, and independent critic |
 | Plan Store | Evidence, decisions, plan, checkpoints |
 | Check Runner | Commands, timeouts, leases, fingerprints, structured evidence |
 | Failure Controller | Signatures, diagnosis, repair, escalation |
@@ -392,6 +438,7 @@ INSPECTING
 DISCOVERING
 AWAITING_USER_DECISION
 PLANNING
+GRILLING
 CRITIQUING
 READY_FOR_APPROVAL
 EXECUTING
@@ -422,6 +469,9 @@ stale, timed out, unavailable, or unverified.
 
 - direct versus discovery classification;
 - tier and effort selection;
+- routine grill skip and strong/frontier grill classification;
+- frontier griller provider independence;
+- no grill PASS with open blockers;
 - planner/critic provider independence;
 - secret filtering and budget gates;
 - zero-tolerance state transitions;
@@ -451,6 +501,7 @@ stale, timed out, unavailable, or unverified.
 
 - real adaptive planning controller;
 - cheap discovery;
+- strong and frontier grill loops;
 - two frontier providers;
 - one normal execution approval card;
 - visible planning agents and execution workflow;
@@ -468,6 +519,8 @@ and manual.
 - Provider remaining subscription quotas are not reliably queryable.
 - Full mandatory regression may be expensive but is required for `VERIFIED`.
 - Scope expansion may require more than one approval card in a single task.
+- Grill has no fixed round count; repeated identical unresolved findings become
+  a blocker.
 
 ## Decision log
 
@@ -498,6 +551,13 @@ and manual.
 18. Affected and regression tests acquire exclusive edit leases.
 19. Planning and execution state persist for checkpoint reconstruction.
 20. One build workflow may own a worktree; separate worktrees remain parallel.
+21. Routine plans skip grill to preserve tokens.
+22. Strong plans require at least one adversarial griller.
+23. Frontier or high-risk plans require at least two frontier grill agents from
+    independent providers.
+24. Grill precedes and does not replace the independent final critic.
+25. Repository facts raised by grill return to discovery; only material
+    decisions interrupt the user.
 
 ## Acceptance criteria for implementation
 
@@ -507,15 +567,20 @@ The feature is complete when:
 2. Local inspection can bypass unnecessary routed discovery.
 3. Planning questions resume the same persisted state.
 4. Two independent frontier providers gate every final plan.
-5. The execution summary exposes model, effort, tests, budget, and planning
+5. Strong/frontier plans cannot compile without a completed grill and zero open
+   grill blockers.
+6. Frontier grill records at least two distinct frontier providers and visible
+   adversarial roles.
+7. Routine plans can skip grill without extra model calls.
+8. The execution summary exposes model, effort, tests, budget, grill, and planning
    usage before approval.
-6. The check runner produces structured evidence and never requires a strong
+9. The check runner produces structured evidence and never requires a strong
    model merely to execute a command.
-7. Failure routing follows the accepted test-diagnose-repair protocol.
-8. No mandatory failed test can produce `VERIFIED`.
-9. New scope produces `AWAITING_SCOPE_APPROVAL`.
-10. Restart and stale-worktree scenarios reconcile without silently reusing
+10. Failure routing follows the accepted test-diagnose-repair protocol.
+11. No mandatory failed test can produce `VERIFIED`.
+12. New scope produces `AWAITING_SCOPE_APPROVAL`.
+13. Restart and stale-worktree scenarios reconcile without silently reusing
     invalid evidence.
-11. Existing commands remain compatible.
-12. Unit, mock integration, local fixture, and opt-in live smoke validation
+14. Existing commands remain compatible.
+15. Unit, mock integration, local fixture, and opt-in live smoke validation
     pass.

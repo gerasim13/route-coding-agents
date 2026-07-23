@@ -1,8 +1,8 @@
 {
   "name": "ai-router",
   "displayName": "AI Router",
-  "version": "0.5.1",
-  "description": "Visible, verified multi-model coding workflows for Claude Code.",
+  "version": "0.6.0",
+  "description": "Visible, grilled, verified multi-model coding workflows for Claude Code.",
   "author": {
     "name": "gerasim13",
     "url": "https://github.com/gerasim13"

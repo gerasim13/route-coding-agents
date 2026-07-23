@@ -1,6 +1,6 @@
 ---
 name: route-coding-agents
-description: Route software-development tasks across Claude, official Codex subscription access, corporate LiteLLM, MiniMax, DeepSeek, and OpenRouter using a visible plan, independent verification after every model call, adaptive escalation, provider health checks, and routed usage accounting. Use when the user asks to delegate coding work, reduce token burn, orchestrate several coding agents, verify a cheaper model, control API spend, or recover from an agent that failed or went in the wrong direction.
+description: Route software-development tasks across Claude, official Codex subscription access, corporate LiteLLM, MiniMax, DeepSeek, and OpenRouter using risk-gated adversarial grilling for complex plans, visible workers, independent verification, adaptive escalation, health checks, and usage accounting. Use when the user asks to delegate coding work, reduce token burn, orchestrate several coding agents, challenge a complex plan, verify a cheaper model, control API spend, or recover from a failed agent.
 ---
 
 # Route coding agents
@@ -11,7 +11,8 @@ Use one supervisor to plan a graph of bounded workers and independent verifiers.
 
 When running in Claude Code/Desktop with the `ai-router` plugin installed,
 invoke `/ai-router:start-workflow <rough software goal>`. It performs adaptive discovery,
-material clarification, and independent frontier planning before compiling one
+material clarification, risk-gated adversarial grilling, and independent
+frontier planning before compiling one
 native Dynamic Workflow where every model call, deterministic check,
 diagnostician, verifier, repair, and replan is visible. Inspect it through
 `/workflows`. Use `/ai-router:workflow <precise software task>` only as the
@@ -33,6 +34,7 @@ Outside Claude, reproduce the same task graph with the harness's native subagent
 - Make every generation a separate visible agent/task. Never hide retries inside a script or MCP call.
 - Treat every observed failure as active work. “Pre-existing” is provenance, not permission to ignore it.
 - Require the complete mandatory regression suite to be green before success.
+- Skip grill for routine plans; require completed adversarial grill with no open blockers for strong/frontier plans.
 
 ## Plan before routing
 
@@ -45,6 +47,7 @@ For each bounded task, show:
 - deterministic acceptance checks;
 - targeted, affected, and complete regression commands;
 - strong-to-frontier diagnosis and independent test-intent routes;
+- grill level, risk signals, adversarial roles, routes, rounds, and resolved blockers;
 - approved fallbacks and API budget.
 
 Choose the initial level by task complexity. Do not force every task through the cheapest model.
@@ -60,6 +63,15 @@ Choose the initial level by task complexity. Do not force every task through the
 When routes are equally adequate, prefer corporate LiteLLM, Codex, or available Claude subscription capacity; then MiniMax; then direct DeepSeek; then OpenRouter.
 
 Treat model family and reasoning effort as separate choices. Use `claude-haiku`, `claude-sonnet`, and `claude-opus` for explicit native Claude tiers; use `claude-best` only at the hardest frontier step so Claude Code can select Fable when entitled and otherwise fall back to Opus. Use `codex-luna`, `codex-terra`, and `codex-sol` for explicit Codex tiers. The legacy aliases `codex` and `codex-high` remain compatible with Terra/medium and Sol/high respectively. Every task declares `routine`, `strong`, or `frontier`; its initial route must match that level, while both worker and verifier ladders must end at frontier capability.
+
+Before final criticism, risk-classify the draft plan. Routine work with clear
+paths, contracts, oracle, and rollback skips grill. Strong work gets at least
+one separate strong-or-frontier assumption/architecture/failure-mode griller.
+Frontier, architecture, public or persistence contract, migration,
+concurrency, security, cross-system, destructive, or unclear-rollback work gets
+at least two frontier grill agents from independent providers. Resolve
+repository facts through discovery, ask only material user decisions, revise
+the plan, and repeat until no blocking finding remains.
 
 ## Verify and escalate
 
