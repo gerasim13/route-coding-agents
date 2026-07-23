@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+
+set -u
+set -o pipefail
+
+router_home="${AI_ROUTER_HOME:-$HOME/.config/ai-coding-router}"
+private_config="${AI_ROUTER_PRIVATE_CONFIG:-$router_home/providers.private.json}"
+opencode_config="${AI_ROUTER_OPENCODE_CONFIG:-$router_home/opencode.json}"
+key_dir="${AI_ROUTER_KEY_DIR:-$router_home/keys}"
+claude_settings="${AI_ROUTER_CLAUDE_SETTINGS:-$HOME/.claude/settings.json}"
+claude_rtk_hook="${AI_ROUTER_CLAUDE_RTK_HOOK:-$HOME/.claude/hooks/rtk-rewrite.sh}"
+codex_agents="${AI_ROUTER_CODEX_AGENTS:-$HOME/.codex/AGENTS.md}"
+codex_rtk="${AI_ROUTER_CODEX_RTK:-$HOME/.codex/RTK.md}"
+network=false
+failures=0
+
+[[ "${1:-}" == --network ]] && network=true
+pass() { printf 'PASS %s\n' "$1"; }
+fail() { printf 'FAIL %s\n' "$1"; failures=$((failures + 1)); }
+skip() { printf 'SKIP %s\n' "$1"; }
+
+for command_name in jq opencode codex claude python3 rtk; do
+  if command -v "$command_name" >/dev/null 2>&1; then pass "command $command_name"; else fail "command $command_name missing"; fi
+done
+
+if [[ -r "$private_config" ]] && jq empty "$private_config" >/dev/null 2>&1; then pass 'private config readable and valid JSON'; else fail 'private config missing or invalid'; fi
+if [[ -r "$opencode_config" ]] && jq empty "$opencode_config" >/dev/null 2>&1; then pass 'OpenCode config readable and valid JSON'; else fail 'OpenCode config missing or invalid'; fi
+if [[ -d "$key_dir" ]]; then pass 'key directory exists'; else fail 'key directory missing'; fi
+
+for key_name in extra_litellm minimax deepseek openrouter; do
+  key_path="$key_dir/$key_name"
+  if [[ -s "$key_path" ]]; then pass "key file $key_name"; else fail "key file $key_name missing or empty"; fi
+done
+
+if [[ -r "$opencode_config" ]]; then
+  if jq -e '
+    [.agent["router-review"], .agent["router-verify"], .agent["router-build"]]
+    | all(.permission["*"] == "deny" and .permission.bash["rtk git status*"] == "allow")
+    and .[0].permission.edit == "deny"
+    and .[1].permission.edit == "deny"
+    and .[2].permission.edit == "allow"
+  ' "$opencode_config" >/dev/null 2>&1; then pass 'OpenCode minimal router profiles with RTK'; else fail 'OpenCode router profiles missing or stale (run router-configure)'; fi
+fi
+
+if [[ -r "$claude_settings" ]] && jq empty "$claude_settings" >/dev/null 2>&1; then
+  if jq -e '
+    [
+      "mcp__plugin_ai-router_ai-router__route_catalog",
+      "mcp__plugin_ai-router_ai-router__health",
+      "mcp__plugin_ai-router_ai-router__prepare_plan",
+      "mcp__plugin_ai-router_ai-router__compile_workflow",
+      "mcp__plugin_ai-router_ai-router__delegate",
+      "mcp__plugin_ai-router_ai-router__record_verdict",
+      "mcp__plugin_ai-router_ai-router__usage"
+    ] as $required
+    | (.permissions.allow // []) as $allowed
+    | all($required[]; . as $tool | $allowed | index($tool))
+  ' "$claude_settings" >/dev/null 2>&1; then pass 'Claude AI Router MCP allowlist'; else fail 'Claude AI Router MCP tools not allowlisted (run router-configure)'; fi
+  if jq -e --arg hook "$claude_rtk_hook" '.hooks.PreToolUse[]? | select(.matcher == "Bash") | .hooks[]? | select(.command == $hook)' "$claude_settings" >/dev/null 2>&1; then pass 'Claude RTK PreToolUse hook'; else fail 'Claude RTK PreToolUse hook missing'; fi
+else
+  fail 'Claude settings missing or invalid'
+fi
+
+if [[ -r "$codex_agents" && -r "$codex_rtk" ]] && grep -q 'RTK.md' "$codex_agents"; then pass 'Codex global RTK instruction'; else fail 'Codex global RTK instruction missing'; fi
+
+if codex login status 2>&1 | grep -q 'Logged in'; then pass 'Codex authenticated'; else fail 'Codex authentication'; fi
+if claude mcp get codex 2>/dev/null | grep -q 'Connected'; then pass 'Claude Codex MCP connected'; else fail 'Claude Codex MCP not connected'; fi
+
+if [[ "$network" == true && -r "$private_config" ]]; then
+  script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+  for route in extra_litellm:corporate-pro minimax:minimax deepseek:cheap openrouter:openrouter-cheap; do
+    provider="${route%%:*}"
+    model_alias="${route#*:}"
+    enabled=$(jq -r --arg provider "$provider" '.[$provider].enabled // false' "$private_config")
+    [[ "$enabled" == true ]] || { skip "$provider disabled"; continue; }
+    if "$script_dir/router-check" --fresh "$model_alias" >/dev/null; then pass "$provider exact model availability"; else fail "$provider exact model availability"; fi
+  done
+else
+  skip 'network checks (use --network)'
+fi
+
+skip 'Antigravity intentionally excluded by policy'
+if ((failures > 0)); then printf 'RESULT failures=%d\n' "$failures"; exit 1; fi
+printf 'RESULT ok\n'

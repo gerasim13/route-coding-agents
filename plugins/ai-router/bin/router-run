@@ -1,0 +1,129 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+router_home="${AI_ROUTER_HOME:-$HOME/.config/ai-coding-router}"
+opencode_config="${AI_ROUTER_OPENCODE_CONFIG:-$router_home/opencode.json}"
+private_config="${AI_ROUTER_PRIVATE_CONFIG:-$router_home/providers.private.json}"
+profile="review"
+model_alias=""
+target_dir=""
+prompt=""
+budget_usd=""
+premium_confirmed=false
+worktree_confirmed=false
+dry_run=false
+json_output=false
+
+usage() {
+  printf '%s\n' \
+    'Usage: router-run --profile review|verify|build --model ALIAS --dir PATH [--prompt TEXT] [options]' \
+    '' \
+    'Model aliases: cheap, minimax, corporate-pro, openrouter-cheap, codex, codex-high, kimi-k3' \
+    '' \
+    'Options:' \
+    '  --worktree-confirmed   Required for build profile' \
+    '  --confirm-premium      Required for kimi-k3' \
+    '  --budget-usd N         Required for kimi-k3 and capped by private config' \
+    '  --json                 Emit raw JSONL events from the underlying agent' \
+    '  --dry-run              Print the selected route without invoking a model'
+}
+
+while (($#)); do
+  case "$1" in
+    --profile) profile="${2:?missing profile}"; shift 2 ;;
+    --model) model_alias="${2:?missing model alias}"; shift 2 ;;
+    --dir) target_dir="${2:?missing directory}"; shift 2 ;;
+    --prompt) prompt="${2:?missing prompt}"; shift 2 ;;
+    --budget-usd) budget_usd="${2:?missing budget}"; shift 2 ;;
+    --confirm-premium) premium_confirmed=true; shift ;;
+    --worktree-confirmed) worktree_confirmed=true; shift ;;
+    --json) json_output=true; shift ;;
+    --dry-run) dry_run=true; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) printf 'Unknown argument: %s\n' "$1" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
+case "$profile" in
+  review|verify|build) ;;
+  *) printf 'Invalid profile: %s\n' "$profile" >&2; exit 2 ;;
+esac
+[[ -n "$model_alias" ]] || { printf 'Missing --model\n' >&2; exit 2; }
+[[ -n "$target_dir" && -d "$target_dir" ]] || { printf 'Missing or invalid --dir\n' >&2; exit 2; }
+
+if [[ -z "$prompt" && ! -t 0 ]]; then
+  prompt=$(cat)
+fi
+[[ -n "$prompt" ]] || { printf 'Missing --prompt or stdin\n' >&2; exit 2; }
+
+if [[ "$profile" == build && "$worktree_confirmed" != true ]]; then
+  printf 'Build profile requires --worktree-confirmed\n' >&2
+  exit 2
+fi
+
+case "$profile" in
+  review) agent='router-review' ;;
+  verify) agent='router-verify' ;;
+  build) agent='router-build' ;;
+esac
+
+provider_model=""
+codex_effort=""
+
+case "$model_alias" in
+  cheap) provider_model='router_deepseek/deepseek-v4-flash' ;;
+  minimax) provider_model='router_minimax/MiniMax-M2.7' ;;
+  corporate-pro) provider_model='router_litellm/cloudru/DeepSeek-V4-Pro' ;;
+  openrouter-cheap) provider_model='router_openrouter/deepseek/deepseek-v4-flash' ;;
+  codex) codex_effort='medium' ;;
+  codex-high) codex_effort='high' ;;
+  kimi-k3) provider_model='router_openrouter/moonshotai/kimi-k3' ;;
+  *) printf 'Unknown model alias: %s\n' "$model_alias" >&2; exit 2 ;;
+esac
+
+if [[ "$model_alias" == kimi-k3 ]]; then
+  [[ "$premium_confirmed" == true ]] || { printf 'Kimi K3 requires --confirm-premium\n' >&2; exit 2; }
+  [[ "$budget_usd" =~ ^[0-9]+([.][0-9]+)?$ ]] || { printf 'Kimi K3 requires numeric --budget-usd\n' >&2; exit 2; }
+  command -v jq >/dev/null || { printf 'jq is required\n' >&2; exit 1; }
+  [[ -r "$private_config" ]] || { printf 'Private router config is not readable\n' >&2; exit 1; }
+  max_budget=$(jq -r '.openrouter.smart_model_max_budget_usd // 0' "$private_config")
+  awk -v requested="$budget_usd" -v maximum="$max_budget" 'BEGIN { exit !(requested <= maximum && maximum > 0) }' || {
+    printf 'Requested budget %s exceeds configured cap %s\n' "$budget_usd" "$max_budget" >&2
+    exit 2
+  }
+fi
+
+if [[ "$dry_run" == true ]]; then
+  if [[ -n "$codex_effort" ]]; then
+    printf 'engine=codex profile=%s effort=%s dir=%s json=%s\n' "$profile" "$codex_effort" "$target_dir" "$json_output"
+  else
+    printf 'engine=opencode profile=%s model=%s dir=%s json=%s\n' "$profile" "$provider_model" "$target_dir" "$json_output"
+  fi
+  exit 0
+fi
+
+script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+"$script_dir/router-check" "$model_alias" >&2
+
+if [[ -n "$codex_effort" ]]; then
+  command -v codex >/dev/null || { printf 'codex is not installed\n' >&2; exit 1; }
+  sandbox='read-only'
+  [[ "$profile" == build || "$profile" == verify ]] && sandbox='workspace-write'
+  # Routed calls need the repository instructions and built-in coding tools, but not the
+  # user's full Codex MCP/plugin stack. Official `--ignore-user-config` keeps ChatGPT auth
+  # while omitting $CODEX_HOME/config.toml; `--ephemeral` avoids accumulating throwaway
+  # sessions. Project-level configuration and AGENTS.md discovery still apply.
+  codex_args=(exec --ignore-user-config --ephemeral --skip-git-repo-check --sandbox "$sandbox" -c "model_reasoning_effort=$codex_effort")
+  [[ "$json_output" == true ]] && codex_args+=(--json)
+  cd "$target_dir"
+  exec codex "${codex_args[@]}" "$prompt"
+fi
+
+command -v opencode >/dev/null || { printf 'opencode is not installed\n' >&2; exit 1; }
+[[ -r "$opencode_config" ]] || { printf 'OpenCode router config is not readable: %s\n' "$opencode_config" >&2; exit 1; }
+
+opencode_args=(run --pure --agent "$agent" --model "$provider_model" --dir "$target_dir")
+[[ "$json_output" == true ]] && opencode_args+=(--format json)
+
+exec env OPENCODE_CONFIG="$opencode_config" opencode "${opencode_args[@]}" "$prompt"

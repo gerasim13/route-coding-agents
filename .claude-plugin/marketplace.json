@@ -1,0 +1,16 @@
+{
+  "name": "ai-router-marketplace",
+  "description": "Visible, verified multi-model coding workflows for Claude Code.",
+  "owner": {
+    "name": "gerasim13"
+  },
+  "plugins": [
+    {
+      "name": "ai-router",
+      "source": "./plugins/ai-router",
+      "description": "Plan, run, verify, and escalate coding work across Claude, Codex, LiteLLM, MiniMax, DeepSeek, and OpenRouter.",
+      "category": "Development",
+      "tags": ["agents", "routing", "workflow", "cost-control"]
+    }
+  ]
+}

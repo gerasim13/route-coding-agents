@@ -1,0 +1,147 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+router_home="${AI_ROUTER_HOME:-$HOME/.config/ai-coding-router}"
+opencode_config="${AI_ROUTER_OPENCODE_CONFIG:-$router_home/opencode.json}"
+claude_settings="${AI_ROUTER_CLAUDE_SETTINGS:-$HOME/.claude/settings.json}"
+[[ -r "$opencode_config" ]] || { printf 'OpenCode config is not readable: %s\n' "$opencode_config" >&2; exit 1; }
+[[ -r "$claude_settings" ]] || { printf 'Claude settings are not readable: %s\n' "$claude_settings" >&2; exit 1; }
+command -v jq >/dev/null || { printf 'jq is required\n' >&2; exit 1; }
+
+umask 077
+backup="$opencode_config.backup.$(date -u +%Y%m%dT%H%M%SZ)"
+cp -p "$opencode_config" "$backup"
+temp_file=$(mktemp "${opencode_config}.XXXXXX")
+trap 'rm -f "$temp_file"' EXIT
+
+jq '
+  def protected_read:
+    {
+      "*": "allow",
+      "*.env": "deny",
+      "*.env.*": "deny",
+      "**/.env": "deny",
+      "**/.env.*": "deny",
+      "**/*credential*": "deny",
+      "**/*secret*": "deny"
+    };
+  def inspection_commands:
+    {
+      "*": "deny",
+      "pwd": "allow",
+      "ls *": "allow",
+      "rg *": "allow",
+      "sed -n *": "allow",
+      "head *": "allow",
+      "tail *": "allow",
+      "wc *": "allow",
+      "find *": "allow",
+      "git status*": "allow",
+      "git diff*": "allow",
+      "git log*": "allow",
+      "git show*": "allow",
+      "git rev-parse*": "allow",
+      "git ls-files*": "allow",
+      "git grep*": "allow"
+    };
+  def deterministic_commands:
+    inspection_commands + {
+      "bash -n *": "allow",
+      "cargo check*": "allow",
+      "cargo test*": "allow",
+      "cargo fmt*": "allow",
+      "cargo clippy*": "allow",
+      "npm test*": "allow",
+      "npm run *": "allow",
+      "pnpm test*": "allow",
+      "pnpm run *": "allow",
+      "yarn test*": "allow",
+      "yarn run *": "allow",
+      "pytest *": "allow",
+      "python -m pytest *": "allow",
+      "python3 -m pytest *": "allow",
+      "python3 -m unittest*": "allow",
+      "uv run *": "allow",
+      "go test*": "allow",
+      "swift test*": "allow",
+      "xcodebuild *": "allow",
+      "node *": "allow",
+      "make *": "allow",
+      "cmake *": "allow",
+      "ctest*": "allow",
+      "./gradlew *": "allow",
+      "dotnet test*": "allow",
+      "bundle exec *": "allow",
+      "git push*": "deny",
+      "git commit*": "deny",
+      "git merge*": "deny",
+      "git rebase*": "deny",
+      "git clean*": "deny",
+      "git reset*": "deny"
+    };
+  def allow_rtk_variants:
+    . as $commands
+    | reduce ($commands | to_entries[]) as $entry
+        ($commands;
+          if $entry.key == "*" then .
+          else .["rtk " + $entry.key] = $entry.value
+          end);
+  def base_permissions($commands; $edit):
+    {
+      "*": "deny",
+      "read": protected_read,
+      "glob": "allow",
+      "grep": "allow",
+      "list": "allow",
+      "bash": ($commands | allow_rtk_variants),
+      "edit": $edit
+    };
+  .agent["router-review"] = {
+    "description": "Minimal read-only routed worker",
+    "mode": "primary",
+    "prompt": "Inspect only the bounded task and current worktree. Never edit files or expand scope. Use RTK-prefixed shell commands when RTK supports the command. Return concise evidence and uncertainty.",
+    "permission": base_permissions(inspection_commands; "deny")
+  }
+  | .agent["router-verify"] = {
+    "description": "Read-only verification worker allowed to run deterministic checks",
+    "mode": "primary",
+    "prompt": "Independently verify the bounded claim against the current worktree. Never edit. Use RTK-prefixed shell commands when RTK supports the command. Run only relevant deterministic checks and return PASS, FAIL, or BLOCKED with evidence.",
+    "permission": base_permissions(deterministic_commands; "deny")
+  }
+  | .agent["router-build"] = {
+    "description": "Minimal worktree-only implementation worker",
+    "mode": "primary",
+    "prompt": "Implement only the bounded task in the current worktree. Inspect before editing, preserve unrelated changes, use RTK-prefixed shell commands when RTK supports the command, run relevant checks, and never alter Git history or publish.",
+    "permission": base_permissions(deterministic_commands; "allow")
+  }
+' "$opencode_config" > "$temp_file"
+
+chmod 600 "$temp_file"
+mv -f "$temp_file" "$opencode_config"
+trap - EXIT
+printf 'Updated %s\nBackup %s\n' "$opencode_config" "$backup"
+
+claude_backup="$claude_settings.backup.$(date -u +%Y%m%dT%H%M%SZ)"
+cp -p "$claude_settings" "$claude_backup"
+claude_temp=$(mktemp "${claude_settings}.XXXXXX")
+trap 'rm -f "$claude_temp"' EXIT
+
+jq '
+  .permissions = (.permissions // {})
+  | .permissions.allow = reduce [
+      "mcp__plugin_ai-router_ai-router__route_catalog",
+      "mcp__plugin_ai-router_ai-router__health",
+      "mcp__plugin_ai-router_ai-router__prepare_plan",
+      "mcp__plugin_ai-router_ai-router__compile_workflow",
+      "mcp__plugin_ai-router_ai-router__delegate",
+      "mcp__plugin_ai-router_ai-router__record_verdict",
+      "mcp__plugin_ai-router_ai-router__usage"
+    ][] as $tool
+    ((.permissions.allow // []); if index($tool) then . else . + [$tool] end)
+' "$claude_settings" > "$claude_temp"
+
+chmod 600 "$claude_temp"
+mv -f "$claude_temp" "$claude_settings"
+trap - EXIT
+printf 'Updated %s\nBackup %s\n' "$claude_settings" "$claude_backup"

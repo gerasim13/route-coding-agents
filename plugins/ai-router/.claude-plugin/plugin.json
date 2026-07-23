@@ -1,0 +1,15 @@
+{
+  "name": "ai-router",
+  "displayName": "AI Router",
+  "version": "0.3.2",
+  "description": "Visible, verified multi-model coding workflows for Claude Code.",
+  "author": {
+    "name": "gerasim13",
+    "url": "https://github.com/gerasim13"
+  },
+  "repository": "https://github.com/gerasim13/route-coding-agents",
+  "license": "MIT",
+  "keywords": ["agents", "routing", "workflow", "cost-control"],
+  "skills": "./claude-skills",
+  "mcpServers": "./.mcp.json"
+}

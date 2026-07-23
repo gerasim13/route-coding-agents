@@ -1,17 +1,46 @@
-# route-coding-agents
+# route-coding-agents / AI Router
 
-A conservative agent skill for routing software-development work by cost, risk, scope, and verification quality.
+AI Router turns multi-model coding delegation into a visible Claude Code Dynamic Workflow:
 
-It keeps one interactive supervisor and delegates bounded work through official channels. Default priority is Codex/corporate LiteLLM, then MiniMax, then direct DeepSeek, with OpenRouter reserved as backup:
+- one route plan and one native approval card;
+- one inspectable workflow agent for every model call;
+- independent verification after every worker;
+- escalation from routine to strong and frontier models;
+- reset to the appropriate initial tier for each new task;
+- routed token and known API-cost accounting.
 
-- ChatGPT/Codex subscription via the official Codex CLI/MCP server;
-- corporate LiteLLM;
-- MiniMax and DeepSeek APIs;
-- OpenRouter backup with a cheap DeepSeek tier and confirmation-gated Kimi K3.
+Supported routes are native Claude workers, the official Codex subscription client, corporate LiteLLM, MiniMax, direct DeepSeek, and OpenRouter backup. Kimi K3 remains confirmation- and budget-gated. Antigravity is deliberately excluded.
 
-Antigravity is deliberately excluded from automatic routing because Google prohibits third-party agents from using an Antigravity subscription session.
+## Install the Claude plugin
 
-## Install
+From Claude Code:
+
+```text
+/plugin marketplace add gerasim13/route-coding-agents
+/plugin install ai-router@ai-router-marketplace
+```
+
+Or from a terminal:
+
+```bash
+claude plugin marketplace add gerasim13/route-coding-agents
+claude plugin install ai-router@ai-router-marketplace --scope user
+```
+
+Start a new Claude session, then run:
+
+```text
+/ai-router:doctor fresh
+/ai-router:workflow <software task>
+```
+
+The full plan appears immediately before Claude's native Workflow approval card. While it runs, use `/workflows` or the Desktop Background Tasks pane to inspect phases, agents, prompts, tool calls, results, time, and Claude tokens. Use `/ai-router:usage` for routed external usage and known API cost.
+
+Claude's auto mode may accept the Workflow card through its classifier. Switch out of auto mode before launch when you want a mandatory manual click.
+
+## Install the portable skill
+
+Codex, OpenCode, Warp, and other Agent Skills clients can use the same routing policy without claiming Claude's native workflow UI:
 
 ```bash
 DISABLE_TELEMETRY=1 npx skills add gerasim13/route-coding-agents \
@@ -19,28 +48,32 @@ DISABLE_TELEMETRY=1 npx skills add gerasim13/route-coding-agents \
   --agent claude-code codex opencode warp --yes
 ```
 
-The skill contains no credentials. Local provider configuration remains under `~/.config/ai-coding-router/` and must not be committed.
-
-Run the local preflight after installation:
+Provider keys and private endpoints remain under `~/.config/ai-coding-router/` and are never committed. After first installation, add the read-only OpenCode verifier profile and keep a timestamped backup:
 
 ```bash
-scripts/router-doctor --network
+plugins/ai-router/bin/router-configure
+plugins/ai-router/bin/router-doctor --network
 ```
 
-Every `router-run` call also performs a no-generation availability check for the selected provider and exact model. Successful checks are shared in a 120-second local cache, keeping the normal path fast while preventing prompts from being sent when a VPN is disconnected or a configured model has disappeared.
+## Development verification
 
-See `SKILL.md` for the workflow and `references/routing-policy.md` for the routing matrix.
+```bash
+python3 -m unittest discover -s plugins/ai-router/tests -v
+claude plugin validate .
+python3 ~/.codex/skills/.system/skill-creator/scripts/quick_validate.py .
+```
+
+See [SKILL.md](SKILL.md) for the portable protocol and [the accepted design](docs/plans/2026-07-23-visible-routing-workflow.md) for the full architecture and decision log.
 
 ## Security properties
 
-- no cookie or OAuth-session reuse;
-- no account rotation;
-- no recursive delegation;
-- read-only review profile;
-- isolated-worktree confirmation for mutations;
-- no worker commit/push/merge/reset;
-- explicit confirmation and local cap for Kimi K3;
-- secrets stay outside the repository.
+- official subscription clients and documented provider APIs only;
+- no cookie, OAuth-session, or account-rotation tricks;
+- no hidden model retries;
+- no worker Git-history mutation or publication;
+- no automatic extra worktrees;
+- secrets excluded from plans, prompts, and accounting logs;
+- explicit premium-route approval and budget cap.
 
 ## License
 

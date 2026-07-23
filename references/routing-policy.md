@@ -17,15 +17,15 @@ Start with local tools whenever a deterministic operation can solve the task. A 
 
 ## Default gates
 
-- Routine API worker: one attempt, one correction, then stop.
+- A verified worker failure moves the task to a stronger route; it never ends the task merely because a cheap worker failed.
 - Codex medium and corporate LiteLLM share first priority; choose by task type or observable remaining quota, never by blind fan-out.
 - OpenRouter is backup-only and must not be selected while an adequate higher-priority route is healthy.
 - Review worker: read-only; no network, edits, subagents, or arbitrary shell.
-- Build worker: isolated worktree; bounded commands; no Git history mutation or publication.
+- Build worker: the current session worktree; bounded commands and approved paths; no Git history mutation or publication.
 - Codex MCP: `medium` by default. Use `high` only with collected evidence.
 - Kimi K3: confirmation required for every task. The local cap is a gate, not a provider-side hard limit; also configure a provider/dashboard limit.
 - Maximum delegation depth: one.
-- Maximum concurrent mutable workers per worktree: one.
+- The router does not impose a fixed agent-count or concurrency cap. The approved dependency graph decides which tasks can run concurrently. All workers use the current session worktree; the planner must order overlapping work when simultaneous edits would invalidate the task graph.
 
 ## Escalation packet
 
@@ -36,6 +36,8 @@ Escalation should reduce context, not forward an entire polluted conversation. I
 3. Exact failing command and error.
 4. One-paragraph diagnosis attempted so far.
 5. Explicit question for the stronger model.
+
+At the strongest approved tier, create a separate frontier replanner. It must produce a materially different approach fingerprint before another frontier worker runs. Continue while new evidence or distinct approaches exist. After the task passes verification, discard its escalation state and route the next task from its own complexity.
 
 ## Verification hierarchy
 
