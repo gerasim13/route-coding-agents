@@ -137,6 +137,7 @@ jq '
       "mcp__plugin_ai-router_ai-router__checkpoint_session",
       "mcp__plugin_ai-router_ai-router__inspect_workspace",
       "mcp__plugin_ai-router_ai-router__run_check",
+      "mcp__plugin_ai-router_ai-router__compile_planning_workflow",
       "mcp__plugin_ai-router_ai-router__prepare_plan",
       "mcp__plugin_ai-router_ai-router__compile_workflow",
       "mcp__plugin_ai-router_ai-router__delegate",

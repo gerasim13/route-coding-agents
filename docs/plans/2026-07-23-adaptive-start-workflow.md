@@ -1,7 +1,32 @@
 # Adaptive AI Router Start Workflow
 
-Status: Accepted design  
+Status: Accepted design, amended after live workflow failure
 Date: 2026-07-23
+
+## Workflow-only enforcement amendment
+
+A live run proved that prompt instructions alone do not guarantee the accepted
+workflow. The controller launched several small inline planning workflows,
+never called `prepare_plan` or `compile_workflow`, lost its skill attribution
+after compaction, and then implemented through direct `Bash`, `Write`, `Edit`,
+and background `codex exec` calls.
+
+The accepted design therefore uses structural enforcement:
+
+- planning runs as one registered native Planning Workflow graph per
+  interaction boundary;
+- implementation runs only as a registered compiled Execution Workflow graph;
+- the main conversation is a controller and cannot invoke direct model
+  delegates, shell execution, edits, worktree creation, or inline workflows
+  while an adaptive session is active;
+- `READY_FOR_APPROVAL` requires a completed registered planning workflow whose
+  RoutePlan digest matches the prepared plan;
+- `EXECUTING` requires a registered compiled execution script and digest;
+- plugin hooks admit only registered workflow scripts from the main
+  conversation while allowing their visible workflow agents to use their
+  declared tools;
+- compact and resume hooks restore the durable controller state and exact next
+  action from MCP state rather than relying on the compacted conversation.
 
 ## Context
 
@@ -18,17 +43,20 @@ existing workflow command as an expert fast path.
 ## Understanding summary
 
 - The user starts with one rough software-development goal.
-- The plugin first performs lightweight local inspection without routed model
-  calls.
-- Clear tasks skip routed discovery; ambiguous tasks use bounded, visible,
-  read-only discovery agents.
+- The controller first performs lightweight local inspection without routed
+  model calls, then compiles one registered visible Planning Workflow.
+- Clear tasks omit discovery nodes; ambiguous tasks add bounded, visible,
+  read-only discovery nodes to the same planning graph.
 - Strong and frontier drafts pass a risk-gated adversarial grill; routine work
   does not pay this token cost.
-- Every final implementation plan is created by a frontier planner and checked
-  by an independent frontier critic from another provider.
+- A zero-token local classifier starts planning at routine, strong, or frontier
+  capability. The planner visibly escalates when repository evidence reveals
+  higher risk, and an independent critic is at least as capable as the final
+  risk tier.
 - Only decisions that materially affect product behavior, architecture,
   security, cost, risk, or scope interrupt the user.
-- Implementation starts after one native Workflow approval card.
+- Implementation starts in a separately registered Execution Workflow after
+  one native Workflow approval card.
 - Test execution is deterministic and separated from model reasoning.
 - The repository follows zero tolerance for test failures: no error is ignored
   because it is pre-existing or unrelated.
@@ -66,20 +94,21 @@ existing workflow command as an expert fast path.
 /ai-router:start-workflow <rough or precise software goal>
 ```
 
-The command owns the planning lifecycle. It may inspect, dispatch discovery
-agents, ask material questions, run frontier planning and criticism, present a
-complete plan, and compile the execution workflow.
+The command owns the lifecycle but does not perform semantic work itself. It
+inspects locally, compiles a registered Planning Workflow, asks any material
+question returned by that graph, verifies the returned RoutePlan digest, and
+then compiles the registered Execution Workflow.
 
 Typical progress:
 
 ```text
 Inspecting locally…
 Discovery required: yes
-Running 3 discovery agents…
+Planning Workflow launched: 3 discovery agents…
 Waiting for one product decision…
-Planning with Claude Best…
-Grilling architecture and failure modes…
-Critiquing with Codex Sol…
+Planning with Claude Best inside the graph…
+Grilling architecture and the immediate wave inside the graph…
+Critiquing with Codex Sol inside the graph…
 Plan ready.
 ```
 
@@ -110,15 +139,16 @@ only the additional scope.
 ```mermaid
 flowchart TD
     A["Rough goal"] --> B["Local inspection without routed models"]
-    B --> C{"Enough evidence?"}
-    C -- "No" --> D["Routed read-only discovery"]
+    B --> W["Compile registered Planning Workflow"]
+    W --> C{"Enough evidence?"}
+    C -- "No" --> D["Visible read-only discovery nodes"]
     D --> E{"Material user decision?"}
     E -- "Yes" --> F["Ask one focused question"]
     F --> D
-    E -- "No" --> G["Frontier planner"]
+    E -- "No" --> G["Adaptive-tier planner"]
     C -- "Yes" --> G
     G --> H{"Risk-gated grill level"}
-    H -- "Routine" --> K["Independent frontier critic"]
+    H -- "Routine" --> K["Independent tier-appropriate critic"]
     H -- "Strong" --> I["One adversarial griller"]
     H -- "Frontier/high risk" --> J["Two or more independent frontier grillers"]
     I --> R{"Blocking findings or material question?"}
@@ -129,8 +159,9 @@ flowchart TD
     R -- "Resolved" --> K
     K -- "Findings" --> G
     K -- "Accepted" --> L["Show plan, checks, routes, and spend"]
-    L --> M["Native Workflow approval card"]
-    M --> N["Execution workflow"]
+    L --> M["Compile registered Execution Workflow"]
+    M --> A1["Native Workflow approval card"]
+    A1 --> N["Execution workflow"]
     N --> O{"Mandatory regression suite green?"}
     O -- "Yes" --> P["VERIFIED"]
     O -- "No, within scope" --> Q["Diagnose and repair"]
@@ -189,7 +220,7 @@ establish.
 
 ### 4. Risk-gated adversarial grill
 
-The frontier planner first produces a draft graph. The controller then
+The adaptive planner first produces a draft graph. The controller then
 classifies grill level from the highest task complexity and material risk:
 
 - `routine`: skip when paths, contracts, oracle, and rollback are clear;
@@ -207,8 +238,8 @@ invalid assumptions, missing tests, rollback or scope concerns, material
 questions, and recommended revisions.
 
 Repository-answerable challenges return to bounded discovery. Material user
-decisions are asked one at a time. All other blockers return to the frontier
-planner. Grill repeats without an arbitrary round cap until no material blocker
+decisions are asked one at a time. All other blockers return to the current or
+next stronger planner. Grill repeats without an arbitrary round cap until no material blocker
 remains. Repeated identical challenges without new evidence or an available
 decision become a concrete blocker rather than an infinite loop.
 
@@ -216,16 +247,20 @@ This is deliberately separate from final plan criticism: grill tries to break
 the draft, while the critic validates the complete revised RoutePlan,
 verification independence, and budget.
 
-### 5. Frontier planning gate
+### 5. Adaptive planning gate
 
 Every final plan, including a plan that skipped routed discovery, uses:
 
-1. one available frontier planner; and
-2. one independent frontier critic from a different provider.
+1. one planner at the locally classified capability tier, visibly escalated if
+   its own risk assessment is higher; and
+2. one independent critic from a different provider at least as capable as the
+   final task risk.
 
-Selection is dynamic. Typical candidates are Codex Sol/high, Claude Opus/high,
-and Claude Best/high. Claude Best resolves to Fable when the account has access
-and otherwise to Opus.
+The default planner ladder is Claude Haiku for routine work, Sonnet for strong
+work, and Opus for frontier work. Critics use an independent Codex tier. The
+classifier consumes no model tokens; a mistaken low classification cannot
+silently weaken a plan because the planner must report risk and the workflow
+reruns it at the higher tier.
 
 The critic checks scope, architecture, dependencies, risks, test coverage,
 model ladders, verification independence, and budget. Findings return to the
@@ -264,6 +299,10 @@ The planning controller constructs an adaptive test pyramid:
 Targeted checks run after each change. Affected checks run after a bounded task.
 The full regression suite always runs at the final gate and may run earlier for
 core, shared API, schema, concurrency, security, or otherwise high-risk work.
+Commands at the same level run inside one visible deterministic check-suite
+node and retain separate structured evidence. This avoids spending a model
+wrapper call for every shell command. An identical affected command reuses a
+green targeted result only when that result proves the worktree did not change.
 
 The controller discovers commands from repository and CI configuration. It
 does not require per-project router policy files.
@@ -420,14 +459,15 @@ Workflow itself resumes across Claude sessions.
 
 | Component | Responsibility |
 |---|---|
-| Adaptive Controller | `/ai-router:start-workflow`, state transitions, user questions |
+| Adaptive Controller | `/ai-router:start-workflow`, workflow-only state transitions, user questions |
 | Local Inspector | Non-generating repository and test discovery |
 | Discovery Router | Bounded tasks and tier selection |
-| Planning Coordinator | Frontier planner, risk-gated grill, and independent critic |
+| Planning Workflow Compiler | One registered visible discovery/planner/grill/critic graph |
 | Plan Store | Evidence, decisions, plan, checkpoints |
 | Check Runner | Commands, timeouts, leases, fingerprints, structured evidence |
 | Failure Controller | Signatures, diagnosis, repair, escalation |
-| Workflow Compiler | Approved execution graph |
+| Execution Workflow Compiler | Digest-bound approved execution graph |
+| Controller Hook | Blocks direct main-session execution and restores state after compact |
 | Usage Store | Tokens, known API cost, verdicts |
 | Worktree Lock | One active build workflow per worktree |
 
@@ -527,13 +567,14 @@ and manual.
 1. One adaptive entry point was chosen over separate planning and execution
    commands.
 2. Local non-generating inspection precedes routed discovery.
-3. Planning remains interactive in the main session; execution uses a native
-   Dynamic Workflow.
+3. Planning and execution use separate registered native Dynamic Workflow
+   graphs; the main session only controls transitions and material questions.
 4. One normal Workflow card approves implementation.
 5. Only material user decisions interrupt planning.
-6. Every implementation plan uses a frontier planner and an independent
-   frontier critic.
-7. The two frontier roles are selected dynamically across providers.
+6. Planning starts at the lowest evidence-appropriate tier and visibly
+   escalates when risk is higher.
+7. Every final plan has an independent tier-appropriate critic from another
+   provider; frontier plans still use frontier planner and critic capability.
 8. Discovery may run diagnostic commands but may not edit source.
 9. Per-project privacy policy files were rejected; configured providers may
    receive code, while secrets remain excluded.
@@ -558,6 +599,20 @@ and manual.
 24. Grill precedes and does not replace the independent final critic.
 25. Repository facts raised by grill return to discovery; only material
     decisions interrupt the user.
+26. Prompt-only workflow compliance was rejected after a live run bypassed
+    `prepare_plan` and `compile_workflow`.
+27. Inline workflows and direct main-session execution are denied while a
+    workflow-only session is active.
+28. A prepared RoutePlan must match the SHA-256 digest returned by the
+    registered Planning Workflow.
+29. Compact and resume recover the exact MCP controller action instead of
+    trusting conversation attribution.
+30. A strong independent calibration node runs after each dependency wave;
+    confirmed material drift gets two frontier checks and in-scope frontier
+    replanning before the next wave.
+31. Planning models emit only a compact semantic architecture/task draft;
+    the Planning Workflow deterministically injects provider, model, effort,
+    verification, diagnosis, and escalation ladders into strict RoutePlan v4.
 
 ## Acceptance criteria for implementation
 
@@ -584,3 +639,9 @@ The feature is complete when:
 14. Existing commands remain compatible.
 15. Unit, mock integration, local fixture, and opt-in live smoke validation
     pass.
+16. `EXECUTING` is impossible without a digest-bound compiled execution graph.
+17. Direct `Bash`, edits, model MCP delegation, worktree creation, and inline
+    Workflow calls from the active main controller are rejected.
+18. Planning runs as one registered graph per interaction boundary and remains
+    inspectable through `/workflows`.
+19. Manual and automatic compact restore the durable controller directive.

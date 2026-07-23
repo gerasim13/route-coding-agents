@@ -10,13 +10,17 @@ Use one supervisor to plan a graph of bounded workers and independent verifiers.
 ## Prefer the Claude plugin
 
 When running in Claude Code/Desktop with the `ai-router` plugin installed,
-invoke `/ai-router:start-workflow <rough software goal>`. It performs adaptive discovery,
-material clarification, risk-gated adversarial grilling, and independent
-frontier planning before compiling one
-native Dynamic Workflow where every model call, deterministic check,
-diagnostician, verifier, repair, and replan is visible. Inspect it through
-`/workflows`. Use `/ai-router:workflow <precise software task>` only as the
-non-interactive expert fast path.
+invoke `/ai-router:start-workflow <rough software goal>`. It compiles one
+registered visible Planning Workflow for adaptive discovery, zero-token
+initial risk classification, tier-appropriate planning, material clarification,
+risk-gated adversarial grilling, and independent criticism. A planner that
+finds greater risk escalates through a new visible node. The exact returned
+RoutePlan is digest-bound to a separately registered Execution Workflow where
+every model call, deterministic check-suite with per-command evidence,
+calibrator, diagnostician, verifier, repair, and replan is visible. Controller
+hooks prevent silent serial fallback and recover state after compact. Inspect
+both graphs through `/workflows`. Use
+`/ai-router:workflow <precise software task>` only as the expert fast path.
 
 Outside Claude, reproduce the same task graph with the harness's native subagents/tasks. Do not claim Claude's workflow UI in Codex, OpenCode, or Warp.
 
@@ -32,6 +36,7 @@ Outside Claude, reproduce the same task graph with the harness's native subagent
 - Do not let workers commit, push, merge, rebase, reset, clean, stash, or publish.
 - Require explicit approval and a dollar cap for premium routes.
 - Make every generation a separate visible agent/task. Never hide retries inside a script or MCP call.
+- In Claude, admit only registered Planning and Execution Workflow scripts; never use inline workflows or direct controller execution.
 - Treat every observed failure as active work. “Pre-existing” is provenance, not permission to ignore it.
 - Require the complete mandatory regression suite to be green before success.
 - Skip grill for routine plans; require completed adversarial grill with no open blockers for strong/frontier plans.

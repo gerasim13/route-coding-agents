@@ -2,12 +2,14 @@
 
 AI Router turns multi-model coding delegation into a visible Claude Code Dynamic Workflow:
 
-- one adaptive entry point for rough tasks, discovery, questions, and planning;
+- one adaptive entry point that compiles a visible planning graph from a rough task;
 - risk-gated adversarial grill for strong/frontier plans, skipped for routine work;
 - two independent frontier planning agents before execution;
-- one route plan and one native approval card;
+- one digest-bound route plan and one native execution approval card;
 - one inspectable workflow agent for every model call;
-- deterministic test nodes plus independent verification after every worker;
+- a workflow-only controller hook that blocks silent serial fallback;
+- compact/resume recovery from durable MCP state;
+- batched deterministic test-suite nodes with per-command evidence, plus independent verification after every worker;
 - strong root-cause diagnosis before repair;
 - escalation from routine to strong and frontier models;
 - reset to the appropriate initial tier for each new task;
@@ -39,17 +41,21 @@ Start a new Claude session, then run:
 /ai-router:start-workflow <rough software goal>
 ```
 
-`/ai-router:start-workflow` first performs a free local inspection, routes only
-missing discovery, asks only material questions, grills strong/frontier drafts,
-and sends the revised plan through an independent frontier critic. Routine
-plans skip grill. The accepted plan appears before Claude's single native
-Workflow approval card. Use `/ai-router:workflow <precise software task>` as
-the non-interactive expert fast path.
+`/ai-router:start-workflow` first performs a free local inspection and
+zero-token risk classification, then compiles one registered Planning Workflow
+containing only the needed discovery, an adaptive Haiku/Sonnet/Opus planner,
+risk-gated grillers, and an independent tier-appropriate critic. A planner that
+finds higher risk visibly escalates to the next tier. Routine plans skip grill.
+MCP verifies the returned RoutePlan digest
+before compiling the registered Execution Workflow. Use
+`/ai-router:workflow <precise software task>` as the expert fast path.
 
-Before approval, discovery, planner, grillers, and critic appear as separate
-visible Agent nodes in the main session and Desktop Background Tasks. After
-approval, use `/workflows` to inspect workers, deterministic checks,
-diagnosticians, verifiers, repairs, prompts, results, time, and Claude tokens.
+Use `/workflows` before and after approval to inspect planning, workers,
+deterministic checks, calibrators, diagnosticians, verifiers, repairs, prompts,
+results, time, and Claude tokens. While a router session is active, plugin
+hooks reject direct main-session `Bash`/edits/model delegation, inline workflow
+scripts, and script digest changes. Compact and resume restore the exact
+controller action from durable state.
 Use `/ai-router:usage` for routed external usage and known API cost.
 
 Claude's auto mode may accept the Workflow card through its classifier. Switch out of auto mode before launch when you want a mandatory manual click.

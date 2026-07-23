@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 import os
 import stat
@@ -97,10 +98,14 @@ class PlanValidationTests(unittest.TestCase):
         plan = valid_plan(self.directory)
         self.assertIs(router_core.validate_plan(plan), plan)
 
-    def test_rejects_non_frontier_or_same_provider_planning_pair(self) -> None:
+    def test_rejects_planning_pair_weaker_than_task_or_same_provider(self) -> None:
         plan = valid_plan(self.directory)
-        plan["planning"]["planner_route"] = "codex-terra"
-        with self.assertRaisesRegex(router_core.PlanValidationError, "frontier"):
+        plan["tasks"][0]["complexity"] = "strong"
+        plan["tasks"][0]["routes"] = ["corporate-pro", "codex-sol"]
+        plan["tasks"][0]["verifier_routes"] = ["codex-terra", "claude-opus"]
+        plan["tasks"][0]["test_intent_verifier_routes"] = ["codex-terra", "claude-opus"]
+        plan["planning"]["planner_route"] = "codex-luna"
+        with self.assertRaisesRegex(router_core.PlanValidationError, "weaker"):
             router_core.validate_plan(plan)
 
         plan = valid_plan(self.directory)
@@ -315,7 +320,18 @@ class PlanValidationTests(unittest.TestCase):
         self.assertEqual(first_verifier["effort"], "low")
         self.assertEqual(summary["planning"]["grill"]["verdict"], "SKIPPED")
         self.assertEqual(summary["minimum_planning_model_agents"], 2)
-        self.assertGreater(summary["minimum_execution_visible_agents"], 3)
+        self.assertEqual(summary["deterministic_command_count"], 3)
+        self.assertEqual(summary["deterministic_check_suite_nodes"], 3)
+        self.assertEqual(summary["dependency_wave_count"], 1)
+        self.assertEqual(summary["minimum_execution_visible_agents"], 7)
+
+        plan = valid_plan(self.directory)
+        plan["tasks"][0]["test_plan"]["affected"] = json.loads(
+            json.dumps(plan["tasks"][0]["test_plan"]["targeted"])
+        )
+        reused_summary = router_core.plan_summary(plan, "reused-plan-id")
+        self.assertEqual(reused_summary["deterministic_command_count"], 3)
+        self.assertEqual(reused_summary["deterministic_check_suite_nodes"], 2)
 
     def test_delegate_roles_include_plan_griller(self) -> None:
         self.assertIn("plan-griller", router_core.ROLES)
@@ -330,6 +346,211 @@ class DocumentationTests(unittest.TestCase):
         self.assertIn(exact_command, readme)
         self.assertIn(exact_command, portable_skill)
         self.assertIn(f'argument-hint: "<rough software goal>"', start_skill)
+
+
+class CompilePlanningWorkflowTests(unittest.TestCase):
+    def test_compiles_one_parallel_visible_planning_graph(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            state = root / "state"
+            worktree = root / "repo"
+            worktree.mkdir()
+            request = {
+                "session_id": "a" * 32,
+                "objective": "Implement a bounded feature",
+                "working_directory": str(worktree),
+                "inspection": {
+                    "worktree": str(worktree.resolve()),
+                    "tracked_file_count": 10,
+                    "candidate_checks": [],
+                },
+                "discovery_tasks": [
+                    {
+                        "id": "architecture",
+                        "objective": "Map relevant ownership and contracts",
+                        "route": "codex-terra",
+                    },
+                    {
+                        "id": "tests",
+                        "objective": "Map test oracles and mandatory regression",
+                        "route": "corporate-pro",
+                    },
+                ],
+                "context": {},
+            }
+            with mock.patch.dict(os.environ, {"AI_ROUTER_STATE_DIR": str(state)}):
+                compiled = router_core.compile_planning_workflow(
+                    request,
+                    PLUGIN_ROOT / "workflow" / "planning.template.js",
+                )
+            script = Path(compiled["script_path"])
+            self.assertTrue(script.is_file())
+            self.assertEqual(stat.S_IMODE(script.stat().st_mode), 0o600)
+            self.assertEqual(compiled["discovery_agents"], 2)
+            self.assertEqual(compiled["initial_planning_tier"], "strong")
+            self.assertEqual(
+                compiled["planning_routes"]["planners"]["strong"],
+                "claude-sonnet",
+            )
+            self.assertEqual(
+                compiled["script_sha256"],
+                hashlib.sha256(script.read_bytes()).hexdigest(),
+            )
+            source = script.read_text(encoding="utf-8")
+            self.assertIn("agentType: 'ai-router:planning-readonly'", source)
+            self.assertIn("agentType: 'ai-router:external-worker'", source)
+            self.assertIn("review harness is intentionally read-only", source)
+            self.assertIn("critic harness is intentionally read-only", source)
+            self.assertNotIn("const ROUTE_PLAN_SCHEMA", source)
+            self.assertIn("function buildRoutePlan", source)
+            self.assertIn("const ROUTING_LADDERS", source)
+            self.assertIn("routes: ['minimax', 'corporate-pro', 'codex-sol']", source)
+            self.assertIn("test_intent_verifier_routes: ['codex-terra', 'claude-opus']", source)
+            self.assertIn("regression: checkSpecs(draft.regression_commands)", source)
+            checked = subprocess.run(
+                ["node", "--check", str(script)],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            self.assertEqual(checked.returncode, 0, checked.stderr)
+            completed = subprocess.run(
+                [
+                    "node",
+                    str(PLUGIN_ROOT / "tests" / "mock_planning_runtime.mjs"),
+                    str(script),
+                ],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            result = json.loads(completed.stdout)
+            self.assertEqual(result["result"]["status"], "PLAN_READY")
+            self.assertGreaterEqual(result["max_active"], 2)
+            self.assertTrue(any(label.startswith("planner:") for label in result["labels"]))
+            self.assertEqual(
+                len([label for label in result["labels"] if label.startswith("grill:")]),
+                2,
+            )
+            self.assertTrue(any(label.startswith("critic:") for label in result["labels"]))
+            route_plan = result["result"]["route_plan"]
+            router_core.validate_plan(route_plan)
+            self.assertEqual(
+                route_plan["tasks"][0]["routes"],
+                ["codex-sol"],
+            )
+            self.assertEqual(
+                route_plan["tasks"][0]["verifier_routes"],
+                ["claude-opus"],
+            )
+            self.assertNotIn("routes", result["result"]["architecture_envelope"])
+
+    def test_critic_plan_correction_returns_to_planner_not_user(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            state = root / "state"
+            worktree = root / "repo"
+            worktree.mkdir()
+            request = {
+                "session_id": "b" * 32,
+                "objective": "Implement a bounded feature",
+                "working_directory": str(worktree),
+                "inspection": {
+                    "worktree": str(worktree.resolve()),
+                    "tracked_file_count": 10,
+                    "candidate_checks": [],
+                },
+                "discovery_tasks": [],
+                "context": {},
+            }
+            with mock.patch.dict(os.environ, {"AI_ROUTER_STATE_DIR": str(state)}):
+                compiled = router_core.compile_planning_workflow(
+                    request,
+                    PLUGIN_ROOT / "workflow" / "planning.template.js",
+                )
+            completed = subprocess.run(
+                [
+                    "node",
+                    str(PLUGIN_ROOT / "tests" / "mock_planning_runtime.mjs"),
+                    compiled["script_path"],
+                    "critic-question",
+                ],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            result = json.loads(completed.stdout)
+            self.assertEqual(result["result"]["status"], "PLAN_READY")
+            self.assertEqual(result["critic_calls"], 2)
+            self.assertGreaterEqual(
+                len([label for label in result["labels"] if label.startswith("planner:")]),
+                3,
+            )
+
+    def test_routine_critic_correction_stays_on_haiku(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            state = root / "state"
+            worktree = root / "repo"
+            worktree.mkdir()
+            request = {
+                "session_id": "c" * 32,
+                "objective": "Create one text file containing exactly hello",
+                "working_directory": str(worktree),
+                "inspection": {
+                    "worktree": str(worktree.resolve()),
+                    "tracked_file_count": 1,
+                    "changed_file_count": 0,
+                    "candidate_checks": [],
+                },
+                "discovery_tasks": [],
+                "context": {},
+            }
+            with mock.patch.dict(os.environ, {"AI_ROUTER_STATE_DIR": str(state)}):
+                compiled = router_core.compile_planning_workflow(
+                    request,
+                    PLUGIN_ROOT / "workflow" / "planning.template.js",
+                )
+            completed = subprocess.run(
+                [
+                    "node",
+                    str(PLUGIN_ROOT / "tests" / "mock_planning_runtime.mjs"),
+                    compiled["script_path"],
+                    "routine-critic-correction",
+                ],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            result = json.loads(completed.stdout)
+            self.assertEqual(result["result"]["status"], "PLAN_READY")
+            planner_labels = [
+                label for label in result["labels"] if label.startswith("planner:")
+            ]
+            self.assertEqual(len(planner_labels), 2)
+            self.assertTrue(all(":claude-haiku:" in label for label in planner_labels))
+
+    def test_zero_token_classifier_keeps_single_artifact_work_on_haiku(self) -> None:
+        tier, signals = router_core.classify_planning_tier(
+            "Create one text file containing exactly hello",
+            {"tracked_file_count": 0, "changed_file_count": 0},
+        )
+        self.assertEqual(tier, "routine")
+        self.assertTrue(signals)
+
+    def test_zero_token_classifier_routes_architecture_to_frontier(self) -> None:
+        tier, signals = router_core.classify_planning_tier(
+            "Design a concurrent schema migration with rollback",
+            {"tracked_file_count": 100, "changed_file_count": 0},
+        )
+        self.assertEqual(tier, "frontier")
+        self.assertTrue(signals)
 
 
 class CompileWorkflowTests(unittest.TestCase):
@@ -348,6 +569,9 @@ class CompileWorkflowTests(unittest.TestCase):
             self.assertNotIn("/*__AI_ROUTER_META__*/ null", script.read_text(encoding="utf-8"))
             self.assertIn('"workflow_id":"test-workflow"', script.read_text(encoding="utf-8"))
             self.assertTrue(script.read_text(encoding="utf-8").startswith("export const meta = {"))
+            self.assertIn("agentType: 'ai-router:coding-worker'", script.read_text(encoding="utf-8"))
+            self.assertIn("agentType: 'ai-router:reviewer-readonly'", script.read_text(encoding="utf-8"))
+            self.assertIn("agentType: 'ai-router:external-worker'", script.read_text(encoding="utf-8"))
             self.assertEqual(stat.S_IMODE(script.stat().st_mode), 0o600)
             checked = subprocess.run(["node", "--check", str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             self.assertEqual(checked.returncode, 0, checked.stderr)
@@ -375,6 +599,7 @@ class CompileWorkflowTests(unittest.TestCase):
             labels = result["labels"]
             self.assertTrue(any("worker:implementation:minimax:a1" in label for label in labels))
             self.assertTrue(any("repair:implementation:corporate-pro:a2" in label for label in labels))
+            self.assertTrue(any(label.startswith("calibrate:wave-") for label in labels))
 
     def test_failed_deterministic_check_gets_strong_diagnosis_then_repair(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -390,9 +615,37 @@ class CompileWorkflowTests(unittest.TestCase):
             result = json.loads(completed.stdout)
             self.assertEqual(result["result"]["status"], "VERIFIED")
             labels = result["labels"]
-            self.assertTrue(any(label.startswith("check:implementation:targeted:") for label in labels))
+            self.assertTrue(any(label.startswith("check-suite:implementation:targeted:") for label in labels))
             self.assertTrue(any(label.startswith("diagnose:implementation:corporate-pro:") for label in labels))
             self.assertTrue(any(label.startswith("repair:implementation:corporate-pro:") for label in labels))
+
+    def test_identical_affected_check_reuses_green_targeted_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            worktree = root / "repo"
+            worktree.mkdir()
+            plan = valid_plan(str(worktree))
+            plan["tasks"][0]["test_plan"]["affected"] = json.loads(
+                json.dumps(plan["tasks"][0]["test_plan"]["targeted"])
+            )
+            script = self._compile(root / "state", plan)
+            completed = subprocess.run(
+                ["node", str(PLUGIN_ROOT / "tests" / "mock_workflow_runtime.mjs"), str(script), "success"],
+                text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            result = json.loads(completed.stdout)
+            self.assertEqual(result["result"]["status"], "VERIFIED")
+            task_checks = [
+                label
+                for label in result["labels"]
+                if label.startswith("check-suite:implementation:")
+            ]
+            self.assertEqual(
+                len([label for label in task_checks if ":targeted:" in label]),
+                1,
+            )
+            self.assertFalse(any(":affected:" in label for label in task_checks))
 
     def test_suspected_flaky_is_diagnosed_and_never_treated_as_green(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -453,7 +706,7 @@ class CompileWorkflowTests(unittest.TestCase):
             self.assertEqual(completed.returncode, 0, completed.stderr)
             result = json.loads(completed.stdout)
             self.assertEqual(result["result"]["status"], "BLOCKED")
-            self.assertTrue(any(":regression:" in label for label in result["labels"]))
+            self.assertTrue(any(label.startswith("check-suite:") and ":regression:" in label for label in result["labels"]))
 
     def test_mock_runtime_runs_ten_independent_workers_concurrently(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -598,7 +851,17 @@ class UsageAndDelegateTests(unittest.TestCase):
                 "prompt": "private task prompt",
                 "timeout_seconds": 30,
             }
-            with mock.patch.dict(os.environ, {"AI_ROUTER_RUNNER": str(runner)}):
+            with (
+                mock.patch.dict(os.environ, {"AI_ROUTER_RUNNER": str(runner)}),
+                mock.patch.object(
+                    router_core,
+                    "health",
+                    return_value={
+                        "all_available": True,
+                        "routes": [{"available": True, "detail": "mock ready"}],
+                    },
+                ),
+            ):
                 result = router_core.run_delegate(arguments, PLUGIN_ROOT, store)
             self.assertEqual(result["status"], "completed")
             self.assertEqual(result["output"], "worker complete")
@@ -674,7 +937,17 @@ class UsageAndDelegateTests(unittest.TestCase):
                 "timeout_seconds": 30,
                 "record_verdict_from_output": True,
             }
-            with mock.patch.dict(os.environ, {"AI_ROUTER_RUNNER": str(runner)}):
+            with (
+                mock.patch.dict(os.environ, {"AI_ROUTER_RUNNER": str(runner)}),
+                mock.patch.object(
+                    router_core,
+                    "health",
+                    return_value={
+                        "all_available": True,
+                        "routes": [{"available": True, "detail": "mock ready"}],
+                    },
+                ),
+            ):
                 result = router_core.run_delegate(arguments, PLUGIN_ROOT, store)
             self.assertTrue(result["verdict_recorded"])
             self.assertEqual(store.aggregate("all", "workflow-1")["verdicts"]["pass"], 1)
@@ -714,6 +987,8 @@ class McpProtocolTests(unittest.TestCase):
                 "checkpoint_session",
                 "inspect_workspace",
                 "run_check",
+                "run_check_suite",
+                "compile_planning_workflow",
                 "prepare_plan",
                 "compile_workflow",
                 "delegate",
@@ -722,10 +997,32 @@ class McpProtocolTests(unittest.TestCase):
             }.issubset(names)
         )
         tools = {tool["name"]: tool for tool in listed["result"]["tools"]}
+        self.assertIn("session_id", tools["prepare_plan"]["inputSchema"]["properties"])
         delegate_role_enum = tools["delegate"]["inputSchema"]["properties"]["role"]["enum"]
         checkpoint_state_enum = tools["checkpoint_session"]["inputSchema"]["properties"]["next_state"]["enum"]
         self.assertIn("plan-griller", delegate_role_enum)
+        self.assertIn("calibrator", delegate_role_enum)
         self.assertIn("GRILLING", checkpoint_state_enum)
+
+
+class AgentManifestTests(unittest.TestCase):
+    def test_external_worker_has_only_exact_router_action_tools(self) -> None:
+        manifest = (PLUGIN_ROOT / "agents" / "external-worker.md").read_text(encoding="utf-8")
+        self.assertIn(
+            "tools: mcp__plugin_ai-router_ai-router__delegate, "
+            "mcp__plugin_ai-router_ai-router__run_check, "
+            "mcp__plugin_ai-router_ai-router__run_check_suite",
+            manifest,
+        )
+        self.assertNotIn("tools: ToolSearch", manifest)
+        self.assertNotIn("tools: Bash", manifest)
+
+    def test_native_reviewer_can_record_without_deferred_tool_search(self) -> None:
+        manifest = (PLUGIN_ROOT / "agents" / "reviewer-readonly.md").read_text(encoding="utf-8")
+        self.assertIn("mcp__plugin_ai-router_ai-router__record_verdict", manifest)
+        self.assertNotIn("ToolSearch", manifest)
+        self.assertNotIn(", Edit", manifest)
+        self.assertNotIn(", Write", manifest)
 
 
 if __name__ == "__main__":

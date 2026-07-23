@@ -52,6 +52,7 @@ if [[ -r "$claude_settings" ]] && jq empty "$claude_settings" >/dev/null 2>&1; t
       "mcp__plugin_ai-router_ai-router__checkpoint_session",
       "mcp__plugin_ai-router_ai-router__inspect_workspace",
       "mcp__plugin_ai-router_ai-router__run_check",
+      "mcp__plugin_ai-router_ai-router__compile_planning_workflow",
       "mcp__plugin_ai-router_ai-router__prepare_plan",
       "mcp__plugin_ai-router_ai-router__compile_workflow",
       "mcp__plugin_ai-router_ai-router__delegate",
@@ -66,10 +67,33 @@ else
   fail 'Claude settings missing or invalid'
 fi
 
+plugin_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+if [[ -r "$plugin_root/hooks/hooks.json" ]] \
+  && jq -e '.hooks.PreToolUse[]? | select(.matcher | contains("Workflow"))' "$plugin_root/hooks/hooks.json" >/dev/null 2>&1 \
+  && [[ -r "$plugin_root/hooks/controller_gate.py" ]]; then
+  pass 'AI Router workflow-only controller hook'
+else
+  fail 'AI Router workflow-only controller hook missing'
+fi
+
+if [[ -r "$plugin_root/agents/external-worker.md" ]] \
+  && grep -Fq 'mcp__plugin_ai-router_ai-router__delegate' "$plugin_root/agents/external-worker.md" \
+  && grep -Fq 'mcp__plugin_ai-router_ai-router__run_check' "$plugin_root/agents/external-worker.md" \
+  && [[ -r "$plugin_root/agents/planning-readonly.md" ]] \
+  && [[ -r "$plugin_root/agents/coding-worker.md" ]] \
+  && [[ -r "$plugin_root/agents/reviewer-readonly.md" ]] \
+  && grep -Fq 'mcp__plugin_ai-router_ai-router__record_verdict' "$plugin_root/agents/reviewer-readonly.md"; then
+  pass 'AI Router scoped workflow agents and exact MCP capabilities'
+else
+  fail 'AI Router scoped workflow agents missing or stale'
+fi
+
 if [[ -r "$codex_agents" && -r "$codex_rtk" ]] && grep -q 'RTK.md' "$codex_agents"; then pass 'Codex global RTK instruction'; else fail 'Codex global RTK instruction missing'; fi
 
-if codex login status 2>&1 | grep -q 'Logged in'; then pass 'Codex authenticated'; else fail 'Codex authentication'; fi
-if claude mcp get codex 2>/dev/null | grep -q 'Connected'; then pass 'Claude Codex MCP connected'; else fail 'Claude Codex MCP not connected'; fi
+codex_login_status=$(codex login status 2>&1)
+if grep -q 'Logged in' <<<"$codex_login_status"; then pass 'Codex authenticated'; else fail 'Codex authentication'; fi
+claude_codex_status=$(claude mcp get codex 2>/dev/null)
+if grep -q 'Connected' <<<"$claude_codex_status"; then pass 'Claude Codex MCP connected'; else fail 'Claude Codex MCP not connected'; fi
 
 if [[ "$network" == true && -r "$private_config" ]]; then
   script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)

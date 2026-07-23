@@ -48,13 +48,15 @@
 
 The repository becomes a Claude Code plugin plus a portable compatibility skill.
 
-1. The `/ai-router:workflow` skill inspects the task and current worktree and produces a structured `RoutePlan` in the main conversation. The command name includes Claude's human workflow opt-in keyword so the native `Workflow` tool is available.
-2. A validator checks the plan before it is shown for approval.
-3. A builder compiles the plan, and Claude's native Workflow approval card provides the one execution confirmation before any agents run.
-4. Each external worker or verifier is a minimal Claude workflow agent that performs exactly one typed MCP delegation.
-5. Native Claude workers use the selected Claude model directly and do not make an external delegation.
-6. The MCP router records normalized usage metadata and returns it with the model result.
-7. Claude `/workflows` remains the primary live progress and inspection UI. `/ai-router:usage` provides cross-provider accounting for routed calls.
+1. The `/ai-router:workflow` skill starts a durable workflow-only controller and performs one non-generating worktree inspection.
+2. A builder compiles one registered Planning Workflow whose visible agents produce and independently challenge the structured `RoutePlan`.
+3. The validator verifies that the exact returned plan digest is prepared before it is shown for approval.
+4. A second builder compiles the registered Execution Workflow, and Claude's native Workflow approval card provides the one execution confirmation before implementation agents run.
+5. Each external worker or verifier is a minimal Claude workflow agent that performs exactly one typed MCP delegation.
+6. Native Claude workers use the selected Claude model directly and do not make an external delegation.
+7. A plugin hook rejects direct controller execution, inline workflows, and script digest changes while allowing registered workflow agents.
+8. The MCP router records normalized usage metadata and returns it with the model result.
+9. Claude `/workflows` remains the primary live progress and inspection UI. `/ai-router:usage` provides cross-provider accounting for routed calls.
 
 ```mermaid
 flowchart TD
@@ -178,6 +180,7 @@ The plugin is ready only when both the direct-success and adaptive-escalation wo
 8. Escalate failed tasks instead of ending them. Reset escalation only after the current task is verified and the workflow advances.
 9. Keep OpenRouter backup-only and Kimi K3 explicitly approved.
 10. Make `/ai-router:workflow` the guaranteed entry point. A live test showed that `/ai-router:run` loaded the skill but did not expose Claude's opt-in-only `Workflow` tool, so the explicit workflow command name is required. Offer, but do not globally enable, a session-wide supervisor.
+11. Enforce the guarantee with registered planning/execution scripts, state-machine gates, plan and script digests, and compact recovery hooks; skill prose alone is insufficient.
 
 ## References
 

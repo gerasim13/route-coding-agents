@@ -1,0 +1,54 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Edit|Write|NotebookEdit|Agent|Task|Workflow|WorktreeCreate|mcp__codex__.*|mcp__gemini-cli__.*|mcp__plugin_ai-router_ai-router__delegate",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/controller_gate.py\" pre-tool",
+            "timeout": 10,
+            "statusMessage": "Checking AI Router workflow contract"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Workflow",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/controller_gate.py\" post-tool",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostCompact": [
+      {
+        "matcher": "manual|auto",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/controller_gate.py\" post-compact",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "compact|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/controller_gate.py\" recover",
+            "timeout": 10,
+            "statusMessage": "Restoring AI Router controller"
+          }
+        ]
+      }
+    ]
+  }
+}

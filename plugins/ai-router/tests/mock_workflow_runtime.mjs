@@ -14,7 +14,7 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-async function agent(_prompt, options = {}) {
+async function agent(prompt, options = {}) {
   const label = options.label || 'unlabeled'
   labels.push(label)
   labelCounts.set(label, (labelCounts.get(label) || 0) + 1)
@@ -33,30 +33,45 @@ async function agent(_prompt, options = {}) {
       blocker: null,
     }
   }
-  if (label.startsWith('check:')) {
+  if (label.startsWith('check-suite:')) {
     const targetedFailure =
       (scenario === 'check-fail-once' || scenario === 'out-of-scope') &&
       label.includes(':implementation:targeted:') &&
-      labels.filter((item) => item.startsWith('check:implementation:targeted:')).length === 1
+      labels.filter((item) => item.startsWith('check-suite:implementation:targeted:')).length === 1
     const flaky =
       scenario === 'flaky-then-repair' &&
       label.includes(':implementation:targeted:') &&
-      labels.filter((item) => item.startsWith('check:implementation:targeted:')).length === 1
+      labels.filter((item) => item.startsWith('check-suite:implementation:targeted:')).length === 1
     const regressionFailure = scenario === 'regression-never-green' && label.includes(':regression:')
     const status = flaky ? 'SUSPECTED_FLAKY' : (targetedFailure || regressionFailure) ? 'FAIL' : 'PASS'
+    const args = JSON.parse(prompt.slice(prompt.lastIndexOf('\n') + 1))
+    const level = label.includes(':regression:') ? 'regression' : label.includes(':affected:') ? 'affected' : 'targeted'
+    const results = args.checks.map((check, index) => {
+      const checkStatus = index === 0 ? status : 'PASS'
+      return {
+        status: checkStatus,
+        level,
+        command: check.command,
+        attempts: checkStatus === 'PASS' ? 1 : 2,
+        rerun_performed: checkStatus !== 'PASS',
+        return_code: checkStatus === 'PASS' ? 0 : 1,
+        duration_ms: 8,
+        workspace_changed: false,
+        failure_signature: checkStatus === 'PASS' ? null : 'mock-failure-signature',
+        stdout_excerpt: '',
+        stderr_excerpt: checkStatus === 'PASS' ? '' : 'mock failure',
+        log_path: '/tmp/mock-check.log',
+        zero_tolerance: true,
+      }
+    }).slice(0, status === 'PASS' ? undefined : 1)
     return {
       status,
-      level: label.includes(':regression:') ? 'regression' : label.includes(':affected:') ? 'affected' : 'targeted',
-      command: 'mock-check',
-      attempts: status === 'PASS' ? 1 : 2,
-      rerun_performed: status !== 'PASS',
-      return_code: status === 'PASS' ? 0 : 1,
-      duration_ms: 8,
-      workspace_changed: false,
-      failure_signature: status === 'PASS' ? null : 'mock-failure-signature',
-      stdout_excerpt: '',
-      stderr_excerpt: status === 'PASS' ? '' : 'mock failure',
-      log_path: '/tmp/mock-check.log',
+      level,
+      checks_requested: args.checks.length,
+      checks_completed: results.length,
+      results,
+      first_non_green: status === 'PASS' ? null : results[0],
+      duration_ms: results.length * 8,
       zero_tolerance: true,
     }
   }
@@ -73,6 +88,16 @@ async function agent(_prompt, options = {}) {
       repair_tier: 'strong',
       scope_status: outOfScope ? 'OUT_OF_SCOPE' : 'IN_SCOPE',
       blocker: null,
+    }
+  }
+  if (label.startsWith('calibrate:')) {
+    return {
+      verdict: 'ALIGNED',
+      summary: 'Mock dependency wave remains aligned',
+      findings: [],
+      task_updates: [],
+      material_question: null,
+      requested_paths: [],
     }
   }
   if (label.startsWith('verifier:') || label.startsWith('test-intent-verifier:') || label.startsWith('final-gate:')) {

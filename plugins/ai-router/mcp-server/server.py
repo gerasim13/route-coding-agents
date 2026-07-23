@@ -10,9 +10,14 @@ from pathlib import Path
 from typing import Any
 
 from adaptive_core import (
+    bind_prepared_plan,
     checkpoint_session,
     inspect_workspace,
+    json_digest,
+    registered_route_plan,
+    register_compiled_workflow,
     run_check,
+    run_check_suite,
     session_status,
     start_session,
 )
@@ -20,6 +25,7 @@ from router_core import (
     ROUTES,
     PlanValidationError,
     UsageStore,
+    compile_planning_workflow,
     compile_workflow,
     health,
     prepare_plan,
@@ -31,6 +37,7 @@ from router_core import (
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW_TEMPLATE = PLUGIN_ROOT / "workflow" / "execute.template.js"
+PLANNING_WORKFLOW_TEMPLATE = PLUGIN_ROOT / "workflow" / "planning.template.js"
 
 
 TOOLS = [
@@ -123,6 +130,42 @@ TOOLS = [
         "annotations": {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": False},
     },
     {
+        "name": "run_check_suite",
+        "description": "Run one ordered suite of approved deterministic checks under the same zero-tolerance policy. Stops at the first non-green result and returns each command's redacted evidence. Batching avoids spending one model-wrapper call per shell command.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["checks", "working_directory", "level", "workflow_id", "task_id"],
+            "properties": {
+                "checks": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 100,
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["command"],
+                        "properties": {
+                            "command": {"type": "string"},
+                            "rerun_command": {"type": "string"},
+                            "timeout_seconds": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 14400,
+                                "default": 3600,
+                            },
+                        },
+                    },
+                },
+                "working_directory": {"type": "string"},
+                "level": {"type": "string", "enum": ["targeted", "affected", "regression"]},
+                "workflow_id": {"type": "string"},
+                "task_id": {"type": "string"},
+            },
+        },
+        "annotations": {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": False},
+    },
+    {
         "name": "route_catalog",
         "description": "List AI Router route aliases, capability levels, provider identities, premium gates, and resolved local model names. This does not call a model.",
         "inputSchema": {"type": "object", "additionalProperties": False, "properties": {}},
@@ -142,13 +185,30 @@ TOOLS = [
         "annotations": {"readOnlyHint": True, "openWorldHint": True},
     },
     {
-        "name": "prepare_plan",
-        "description": "Validate and persist a pending RoutePlan before showing it for the user's one-time approval. Returns a plan_id and a display summary. Does not call a model.",
+        "name": "compile_planning_workflow",
+        "description": "Compile and register one visible read-only Planning Workflow graph for discovery, frontier planning, risk-gated architectural grill, and independent criticism. Inline or ad-hoc planning workflows are rejected by the controller hook.",
         "inputSchema": {
             "type": "object",
             "additionalProperties": False,
-            "required": ["plan"],
-            "properties": {"plan": {"type": "object"}},
+            "required": ["request"],
+            "properties": {"request": {"type": "object"}},
+        },
+        "annotations": {"readOnlyHint": False, "openWorldHint": False},
+    },
+    {
+        "name": "prepare_plan",
+        "description": "Validate and persist the exact RoutePlan returned by a completed registered Planning Workflow. Pass session_id so the server loads the result directly without retranscribing large JSON. The plan property remains for backward compatibility. Returns a plan_id and display summary; does not call a model.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "session_id": {"type": "string"},
+                "plan": {"type": "object"},
+            },
+            "anyOf": [
+                {"required": ["session_id"]},
+                {"required": ["plan"]},
+            ],
         },
         "annotations": {"readOnlyHint": False, "openWorldHint": False},
     },
@@ -185,6 +245,7 @@ TOOLS = [
                         "planner",
                         "plan-griller",
                         "plan-critic",
+                        "calibrator",
                         "diagnostician",
                         "test-intent-verifier",
                     ],
@@ -278,6 +339,16 @@ def call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
                 timeout_seconds=arguments.get("timeout_seconds", 3600),
             )
         )
+    if name == "run_check_suite":
+        return _text_result(
+            run_check_suite(
+                checks=arguments.get("checks", []),
+                working_directory=arguments.get("working_directory", ""),
+                level=arguments.get("level", ""),
+                workflow_id=arguments.get("workflow_id", ""),
+                task_id=arguments.get("task_id", ""),
+            )
+        )
     if name == "route_catalog":
         routes = []
         for alias, route in ROUTES.items():
@@ -304,10 +375,50 @@ def call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
             "openrouter-cheap",
         ]
         return _text_result(health(routes, PLUGIN_ROOT, fresh=bool(arguments.get("fresh", False))))
+    if name == "compile_planning_workflow":
+        compiled = compile_planning_workflow(
+            arguments.get("request"),
+            PLANNING_WORKFLOW_TEMPLATE,
+        )
+        register_compiled_workflow(
+            compiled["session_id"],
+            "planning",
+            compilation_id=compiled["compilation_id"],
+            workflow_id=compiled["workflow_id"],
+            script_path=compiled["script_path"],
+            script_sha256=compiled["script_sha256"],
+        )
+        return _text_result(compiled)
     if name == "prepare_plan":
-        return _text_result(prepare_plan(arguments.get("plan")))
+        session_id_argument = arguments.get("session_id")
+        plan = (
+            registered_route_plan(session_id_argument)
+            if isinstance(session_id_argument, str) and session_id_argument
+            else arguments.get("plan")
+        )
+        prepared = prepare_plan(plan)
+        session_id = prepared.get("session_id")
+        if session_id:
+            bind_prepared_plan(
+                session_id,
+                plan_id=prepared["plan_id"],
+                workflow_id=prepared["workflow_id"],
+                plan_digest=prepared.get("plan_digest") or json_digest(plan),
+            )
+        return _text_result(prepared)
     if name == "compile_workflow":
-        return _text_result(compile_workflow(arguments.get("plan_id", ""), WORKFLOW_TEMPLATE))
+        compiled = compile_workflow(arguments.get("plan_id", ""), WORKFLOW_TEMPLATE)
+        if compiled.get("session_id"):
+            register_compiled_workflow(
+                compiled["session_id"],
+                "execution",
+                compilation_id=compiled["plan_id"],
+                workflow_id=compiled["workflow_id"],
+                plan_id=compiled["plan_id"],
+                script_path=compiled["script_path"],
+                script_sha256=compiled["script_sha256"],
+            )
+        return _text_result(compiled)
     if name == "delegate":
         return _text_result(run_delegate(arguments, PLUGIN_ROOT))
     if name == "record_verdict":
@@ -326,7 +437,7 @@ def dispatch(request: dict[str, Any]) -> dict[str, Any] | None:
         result = {
             "protocolVersion": request.get("params", {}).get("protocolVersion", "2024-11-05"),
             "capabilities": {"tools": {"listChanged": False}},
-            "serverInfo": {"name": "ai-router", "version": "0.6.0"},
+            "serverInfo": {"name": "ai-router", "version": "0.7.10"},
         }
     elif method == "ping":
         result = {}

@@ -3,7 +3,7 @@ export const meta = /*__AI_ROUTER_META__*/ null
 const PLAN = /*__AI_ROUTER_PLAN__*/ null
 const DELEGATE_TOOL = 'mcp__plugin_ai-router_ai-router__delegate'
 const RECORD_VERDICT_TOOL = 'mcp__plugin_ai-router_ai-router__record_verdict'
-const RUN_CHECK_TOOL = 'mcp__plugin_ai-router_ai-router__run_check'
+const RUN_CHECK_SUITE_TOOL = 'mcp__plugin_ai-router_ai-router__run_check_suite'
 
 const WORKER_SCHEMA = {
   type: 'object', additionalProperties: false,
@@ -66,6 +66,24 @@ const CHECK_SCHEMA = {
   },
 }
 
+const CHECK_SUITE_SCHEMA = {
+  type: 'object', additionalProperties: false,
+  required: [
+    'status', 'level', 'checks_requested', 'checks_completed', 'results',
+    'first_non_green', 'duration_ms', 'zero_tolerance',
+  ],
+  properties: {
+    status: { type: 'string', enum: ['PASS', 'FAIL', 'SUSPECTED_FLAKY', 'TIMED_OUT', 'STALE'] },
+    level: { type: 'string', enum: ['targeted', 'affected', 'regression'] },
+    checks_requested: { type: 'integer' },
+    checks_completed: { type: 'integer' },
+    results: { type: 'array', items: CHECK_SCHEMA },
+    first_non_green: { anyOf: [CHECK_SCHEMA, { type: 'null' }] },
+    duration_ms: { type: 'integer' },
+    zero_tolerance: { type: 'boolean' },
+  },
+}
+
 const DIAGNOSIS_SCHEMA = {
   type: 'object', additionalProperties: false,
   required: [
@@ -83,6 +101,34 @@ const DIAGNOSIS_SCHEMA = {
     repair_tier: { type: 'string', enum: ['routine', 'strong', 'frontier'] },
     scope_status: { type: 'string', enum: ['IN_SCOPE', 'OUT_OF_SCOPE'] },
     blocker: { type: ['string', 'null'] },
+  },
+}
+
+const CALIBRATION_SCHEMA = {
+  type: 'object', additionalProperties: false,
+  required: [
+    'verdict', 'summary', 'findings', 'task_updates',
+    'material_question', 'requested_paths',
+  ],
+  properties: {
+    verdict: { type: 'string', enum: ['ALIGNED', 'REPLAN', 'SCOPE_CHANGE', 'BLOCKED'] },
+    summary: { type: 'string' },
+    findings: { type: 'array', items: { type: 'string' } },
+    task_updates: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['id', 'revised_objective', 'additional_checks'],
+        properties: {
+          id: { type: 'string' },
+          revised_objective: { type: 'string' },
+          additional_checks: { type: 'array', items: { type: 'string' } },
+        },
+      },
+    },
+    material_question: { type: ['string', 'null'] },
+    requested_paths: { type: 'array', items: { type: 'string' } },
   },
 }
 
@@ -123,6 +169,15 @@ function routeCapability(route) {
   return 1
 }
 
+function providerGroup(route) {
+  if (route.startsWith('codex')) return 'openai-subscription'
+  if (route.startsWith('claude')) return 'anthropic-subscription'
+  if (route === 'corporate-pro') return 'corporate-litellm'
+  if (route === 'minimax') return 'minimax'
+  if (route === 'cheap') return 'deepseek'
+  return 'openrouter'
+}
+
 function statusFromRouter(status) {
   if (status === 'completed') return 'COMPLETED'
   if (status === 'unavailable') return 'UNAVAILABLE'
@@ -139,7 +194,7 @@ function delegationArgs(route, role, taskId, profile, prompt) {
     profile,
     working_directory: PLAN.working_directory,
     prompt,
-    timeout_seconds: 7200,
+    timeout_seconds: profile === 'build' ? 1800 : 600,
   }
   if (route === 'kimi-k3') value.budget_usd = PLAN.approval.max_api_budget_usd
   return value
@@ -162,7 +217,7 @@ async function runExternalWorker(route, role, task, prompt, label, profile) {
     phase: rolePhase(role),
     schema: WORKER_SCHEMA,
     model: 'haiku',
-    tools: [DELEGATE_TOOL],
+    agentType: 'ai-router:external-worker',
     maxTurns: 4,
   })
 }
@@ -175,7 +230,7 @@ async function runNativeWorker(route, role, task, prompt, label) {
       phase: rolePhase(role),
       schema: WORKER_SCHEMA,
       model: nativeModel(route),
-      tools: ['Read', 'Edit', 'Write', 'Glob', 'Grep', 'Bash'],
+      agentType: 'ai-router:coding-worker',
     }),
   )
 }
@@ -201,42 +256,87 @@ async function runWorker(route, role, task, objective, evidence, attempt) {
     : runExternalWorker(route, role, task, prompt, label, profile)
 }
 
-async function runDeterministicCheck(taskId, level, check, sequence) {
+async function runDeterministicCheckSuite(taskId, level, checks, sequence) {
   const args = {
     workflow_id: PLAN.workflow_id,
-    task_id: `${taskId}-${level}-${sequence}`,
+    task_id: `${taskId}-${level}-${sequence}`.slice(0, 64),
     working_directory: PLAN.working_directory,
     level,
-    command: check.command,
-    timeout_seconds: check.timeout_seconds || 3600,
+    checks: checks.map((check) => ({
+      command: check.command,
+      ...(check.rerun_command ? { rerun_command: check.rerun_command } : {}),
+      timeout_seconds: check.timeout_seconds || 3600,
+    })),
   }
-  if (check.rerun_command) args.rerun_command = check.rerun_command
   const prompt = [
-    'You are a transparent deterministic check wrapper, not a coding model.',
+    'You are a transparent deterministic check-suite wrapper, not a coding model.',
     'Do not inspect, edit, diagnose, retry, or summarize the repository yourself.',
-    `Call ${RUN_CHECK_TOOL} EXACTLY ONCE with the JSON below. It is your only action tool.`,
-    'Map the returned fields into the requested schema without changing status.',
+    `Call ${RUN_CHECK_SUITE_TOOL} EXACTLY ONCE with the JSON below. It is your only action tool.`,
+    'Map the returned suite and per-command evidence into the requested schema without changing status.',
     'FAIL, SUSPECTED_FLAKY, TIMED_OUT, and STALE are all non-green.',
     '',
     JSON.stringify(args),
   ].join('\n')
   return agent(prompt, {
-    label: `check:${taskId}:${level}:${sequence}`,
+    label: `check-suite:${taskId}:${level}:${sequence}`,
     phase: level === 'regression' ? 'Final gate' : 'Check',
-    schema: CHECK_SCHEMA,
+    schema: CHECK_SUITE_SCHEMA,
     model: 'haiku',
-    tools: [RUN_CHECK_TOOL],
+    agentType: 'ai-router:external-worker',
     maxTurns: 4,
   })
 }
 
-async function runCheckLevel(task, level, sequenceBase = 0) {
+function deterministicCheckKey(check) {
+  return JSON.stringify([
+    check.command,
+    check.rerun_command || null,
+    check.timeout_seconds || 3600,
+  ])
+}
+
+async function runCheckLevel(task, level, sequenceBase = 0, passedChecks = new Map()) {
   const checks = task.test_plan?.[level] || []
   const results = []
-  for (let index = 0; index < checks.length; index += 1) {
-    const result = await runDeterministicCheck(task.id, level, checks[index], sequenceBase + index + 1)
+  const pendingChecks = []
+  for (const check of checks) {
+    const checkKey = deterministicCheckKey(check)
+    const reusable = passedChecks.get(checkKey)
+    if (
+      reusable &&
+      reusable.status === 'PASS' &&
+      reusable.workspace_changed === false
+    ) {
+      results.push({
+        ...reusable,
+        level,
+        reused_from_level: reusable.level,
+        reused_identical_check: true,
+      })
+      continue
+    }
+    pendingChecks.push(check)
+  }
+  if (!pendingChecks.length) return results
+  const suite = await runDeterministicCheckSuite(
+    task.id,
+    level,
+    pendingChecks,
+    sequenceBase + 1,
+  )
+  for (let index = 0; index < (suite?.results || []).length; index += 1) {
+    const result = suite.results[index]
     results.push(result)
-    if (!result || result.status !== 'PASS') break
+    if (
+      result &&
+      result.status === 'PASS' &&
+      result.workspace_changed === false
+    ) {
+      passedChecks.set(deterministicCheckKey(pendingChecks[index]), result)
+    }
+  }
+  if (!suite || !suite.results?.length) {
+    results.push(null)
   }
   return results
 }
@@ -279,7 +379,7 @@ async function runExternalVerifier(route, task, workerRoute, workerResult, attem
     phase: rolePhase(role),
     schema: VERIFIER_SCHEMA,
     model: 'haiku',
-    tools: [DELEGATE_TOOL],
+    agentType: 'ai-router:external-worker',
     maxTurns: 4,
   })
 }
@@ -305,7 +405,7 @@ async function runNativeVerifier(route, task, workerRoute, workerResult, attempt
     phase: rolePhase(role),
     schema: VERIFIER_SCHEMA,
     model: nativeModel(route),
-    tools: ['Read', 'Glob', 'Grep', RECORD_VERDICT_TOOL],
+    agentType: 'ai-router:reviewer-readonly',
   }))
 }
 
@@ -341,7 +441,7 @@ async function runExternalDiagnosis(route, task, failureEvidence, attempt) {
     phase: 'Escalate',
     schema: DIAGNOSIS_SCHEMA,
     model: 'haiku',
-    tools: [DELEGATE_TOOL],
+    agentType: 'ai-router:external-worker',
     maxTurns: 4,
   })
 }
@@ -362,7 +462,7 @@ async function runNativeDiagnosis(route, task, failureEvidence, attempt) {
     phase: 'Escalate',
     schema: DIAGNOSIS_SCHEMA,
     model: nativeModel(route),
-    tools: ['Read', 'Glob', 'Grep'],
+    agentType: 'ai-router:reviewer-readonly',
   }))
 }
 
@@ -439,7 +539,7 @@ async function runExternalReplanner(route, task, evidence, cycle) {
   return agent(wrapperPrompt, {
     label: `replan:${task.id}:${route}:c${cycle}`,
     phase: 'Escalate', schema: REPLAN_SCHEMA, model: 'haiku',
-    tools: [DELEGATE_TOOL], maxTurns: 4,
+    agentType: 'ai-router:external-worker', maxTurns: 4,
   })
 }
 
@@ -457,7 +557,7 @@ async function runNativeReplanner(route, task, evidence, cycle) {
   return agent(prompt, withNativeEffort(route, {
     label: `replan:${task.id}:${route}:c${cycle}`,
     phase: 'Escalate', schema: REPLAN_SCHEMA, model: nativeModel(route),
-    tools: ['Read', 'Glob', 'Grep', 'Bash'],
+    agentType: 'ai-router:reviewer-readonly',
   }))
 }
 
@@ -468,7 +568,8 @@ async function runReplanner(route, task, evidence, cycle) {
 }
 
 async function evaluateWorker(task, workerRoute, worker, attempt) {
-  const targeted = await runCheckLevel(task, 'targeted', attempt * 100)
+  const passedChecks = new Map()
+  const targeted = await runCheckLevel(task, 'targeted', attempt * 100, passedChecks)
   const targetedFailure = firstNonGreen(targeted)
   if (targetedFailure) {
     return {
@@ -476,7 +577,12 @@ async function evaluateWorker(task, workerRoute, worker, attempt) {
       failure: { stage: 'targeted', check: targetedFailure, checks: targeted, worker },
     }
   }
-  const affected = await runCheckLevel(task, 'affected', attempt * 100 + targeted.length)
+  const affected = await runCheckLevel(
+    task,
+    'affected',
+    attempt * 100 + targeted.length,
+    passedChecks,
+  )
   const affectedFailure = firstNonGreen(affected)
   const checkEvidence = [...targeted, ...affected]
   if (affectedFailure) {
@@ -647,9 +753,185 @@ async function runTask(task) {
   }
 }
 
+async function runExternalCalibration(route, completedIds, remainingTasks, taskResults, wave, priorEvidence) {
+  const prompt = [
+    'Act as an independent read-only execution calibrator after one dependency wave.',
+    `Approved objective: ${PLAN.objective}`,
+    `Architecture envelope: ${JSON.stringify(PLAN.planning.architecture_envelope || {})}`,
+    `Completed task ids: ${completedIds.join(', ')}`,
+    `Completed results: ${JSON.stringify(taskResults)}`,
+    `Remaining approved tasks: ${JSON.stringify(remainingTasks)}`,
+    priorEvidence.length ? `Earlier calibration evidence: ${JSON.stringify(priorEvidence)}` : '',
+    'Compare current repository evidence with the approved architecture, scope, completed wave, and next dependency wave.',
+    'Use ALIGNED when the plan remains sound. Use REPLAN for in-scope drift that requires revised objectives or checks.',
+    'Use SCOPE_CHANGE only when required paths or product/public/persistence behavior exceed approved scope.',
+    'Use BLOCKED only for an exact external blocker. Do not ignore any observed failure as pre-existing.',
+    'Return concise findings and proposed task_updates, but do not edit or run tests.',
+  ].filter(Boolean).join('\n\n')
+  const args = delegationArgs(route, 'calibrator', `calibration-wave-${wave}`, 'verify', prompt)
+  const wrapperPrompt = [
+    'You are a transparent one-generation AI Router calibration wrapper.',
+    `Call ${DELEGATE_TOOL} EXACTLY ONCE with the JSON below.`,
+    'Do not inspect, edit, retry, or calibrate anything yourself. Map delegated JSON into the requested schema.',
+    'If malformed or unavailable, return verdict=BLOCKED with the exact provider failure in findings.',
+    '',
+    JSON.stringify(args),
+  ].join('\n')
+  return agent(wrapperPrompt, {
+    label: `calibrate:wave-${wave}:${route}`,
+    phase: 'Calibrate',
+    schema: CALIBRATION_SCHEMA,
+    model: 'haiku',
+    agentType: 'ai-router:external-worker',
+    maxTurns: 4,
+  })
+}
+
+async function runNativeCalibration(route, completedIds, remainingTasks, taskResults, wave, priorEvidence) {
+  const prompt = [
+    'Act as an independent read-only execution calibrator after one dependency wave.',
+    `Working directory: ${PLAN.working_directory}`,
+    `Approved objective: ${PLAN.objective}`,
+    `Architecture envelope: ${JSON.stringify(PLAN.planning.architecture_envelope || {})}`,
+    `Completed task ids: ${completedIds.join(', ')}`,
+    `Completed results: ${JSON.stringify(taskResults)}`,
+    `Remaining approved tasks: ${JSON.stringify(remainingTasks)}`,
+    priorEvidence.length ? `Earlier calibration evidence: ${JSON.stringify(priorEvidence)}` : '',
+    'Inspect the current repository and compare it with the approved architecture, scope, completed wave, and next dependency wave.',
+    'Do not edit or run the planned tests. ALIGNED means the plan remains sound; REPLAN means in-scope drift; SCOPE_CHANGE means new approval is required.',
+    'Every observed failure remains active work regardless of provenance.',
+  ].filter(Boolean).join('\n\n')
+  return agent(prompt, withNativeEffort(route, {
+    label: `calibrate:wave-${wave}:${route}`,
+    phase: 'Calibrate',
+    schema: CALIBRATION_SCHEMA,
+    model: nativeModel(route),
+    agentType: 'ai-router:reviewer-readonly',
+  }))
+}
+
+async function runCalibrationRoute(route, completedIds, remainingTasks, taskResults, wave, priorEvidence = []) {
+  return isNative(route)
+    ? runNativeCalibration(route, completedIds, remainingTasks, taskResults, wave, priorEvidence)
+    : runExternalCalibration(route, completedIds, remainingTasks, taskResults, wave, priorEvidence)
+}
+
+function chooseCalibrationRoute(taskResults) {
+  const workerProviders = new Set(
+    Object.values(taskResults)
+      .map((result) => result?.worker_route)
+      .filter(Boolean)
+      .map(providerGroup),
+  )
+  return ['corporate-pro', 'codex-terra', 'claude-sonnet']
+    .find((route) => !workerProviders.has(providerGroup(route))) || 'codex-terra'
+}
+
+async function calibrateWave(completedIds, pending, taskResults, wave) {
+  const remainingTasks = [...pending.values()]
+  const terminalRoutineWave =
+    remainingTasks.length === 0 &&
+    PLAN.tasks.every((task) => task.complexity === 'routine')
+  const strongRoute = terminalRoutineWave
+    ? 'claude-haiku'
+    : chooseCalibrationRoute(taskResults)
+  const strong = await runCalibrationRoute(
+    strongRoute,
+    completedIds,
+    remainingTasks,
+    taskResults,
+    wave,
+  )
+  if (strong?.verdict === 'ALIGNED') return { terminal: null, calibration: { strongRoute, strong } }
+  if (strong?.verdict === 'SCOPE_CHANGE') {
+    return {
+      terminal: {
+        status: 'AWAITING_SCOPE_APPROVAL',
+        blocker: strong.material_question || 'calibration found a required scope change',
+        requested_paths: strong.requested_paths,
+        calibration: { strongRoute, strong },
+      },
+      calibration: { strongRoute, strong },
+    }
+  }
+
+  const frontierRoutes = ['codex-sol', 'claude-opus']
+  const frontier = await parallel(frontierRoutes.map((route) => () =>
+    runCalibrationRoute(
+      route,
+      completedIds,
+      remainingTasks,
+      taskResults,
+      wave,
+      [{ route: strongRoute, result: strong }],
+    ),
+  ))
+  const scopeFinding = frontier.find((result) => result?.verdict === 'SCOPE_CHANGE')
+  if (scopeFinding) {
+    return {
+      terminal: {
+        status: 'AWAITING_SCOPE_APPROVAL',
+        blocker: scopeFinding.material_question || 'frontier calibration confirmed a required scope change',
+        requested_paths: scopeFinding.requested_paths,
+        calibration: { strongRoute, strong, frontierRoutes, frontier },
+      },
+      calibration: { strongRoute, strong, frontierRoutes, frontier },
+    }
+  }
+  if (frontier.every((result) => result?.verdict === 'ALIGNED')) {
+    return {
+      terminal: null,
+      calibration: { strongRoute, strong, frontierRoutes, frontier, resolution: 'frontier-overruled-strong-drift' },
+    }
+  }
+  if (!remainingTasks.length) {
+    return {
+      terminal: null,
+      calibration: { strongRoute, strong, frontierRoutes, frontier, resolution: 'final-gate-must-resolve-drift' },
+    }
+  }
+
+  const evidence = [{ route: strongRoute, result: strong }, ...frontierRoutes.map(
+    (route, index) => ({ route, result: frontier[index] }),
+  )]
+  const replans = await parallel(remainingTasks.map((task, index) => () =>
+    runReplanner(frontierRoutes[index % frontierRoutes.length], task, evidence, wave),
+  ))
+  for (let index = 0; index < remainingTasks.length; index += 1) {
+    const task = remainingTasks[index]
+    const replan = replans[index]
+    if (!replan?.can_progress) {
+      return {
+        terminal: {
+          status: 'BLOCKED',
+          task_id: task.id,
+          blocker: replan?.blocker || 'frontier recalibration found no distinct in-scope next approach',
+          calibration: { strongRoute, strong, frontierRoutes, frontier, replans },
+        },
+        calibration: { strongRoute, strong, frontierRoutes, frontier, replans },
+      }
+    }
+    const updated = {
+      ...task,
+      objective: replan.revised_objective,
+      acceptance_checks: [
+        ...task.acceptance_checks,
+        ...(replan.additional_checks || []),
+      ],
+    }
+    pending.set(task.id, updated)
+  }
+  return {
+    terminal: null,
+    calibration: { strongRoute, strong, frontierRoutes, frontier, replans, resolution: 'remaining-wave-replanned' },
+  }
+}
+
 async function runTaskGraph() {
   const pending = new Map(PLAN.tasks.map((task) => [task.id, task]))
   const results = {}
+  const calibrations = []
+  let wave = 0
   while (pending.size) {
     for (const [taskId, task] of [...pending.entries()]) {
       const blockedDependency = task.dependencies.find((dependency) => results[dependency] && results[dependency].status !== 'VERIFIED')
@@ -665,6 +947,7 @@ async function runTaskGraph() {
     }
     const ready = [...pending.values()].filter((task) => task.dependencies.every((dependency) => results[dependency]?.status === 'VERIFIED'))
     if (!ready.length) break
+    wave += 1
     const batch = ready.length === 1
       ? [await runTask(ready[0])]
       : await parallel(ready.map((task) => () => runTask(task)))
@@ -672,11 +955,25 @@ async function runTaskGraph() {
       results[task.id] = batch[index]
       pending.delete(task.id)
     })
+    if (batch.every((result) => result?.status === 'VERIFIED')) {
+      phase('Calibrate')
+      const calibrated = await calibrateWave(
+        ready.map((task) => task.id),
+        pending,
+        results,
+        wave,
+      )
+      calibrations.push(calibrated.calibration)
+      if (calibrated.terminal) {
+        return { results, calibrations, terminal: calibrated.terminal }
+      }
+      phase('Execute')
+    }
   }
   for (const taskId of pending.keys()) {
     results[taskId] = { status: 'BLOCKED', task_id: taskId, blocker: 'no runnable dependency path remained' }
   }
-  return results
+  return { results, calibrations, terminal: null }
 }
 
 async function runFinalGate(taskResults) {
@@ -819,15 +1116,37 @@ async function runFinalGate(taskResults) {
 }
 
 phase('Execute')
-const taskResults = await runTaskGraph()
+const graph = await runTaskGraph()
+const taskResults = graph.results
+if (graph.terminal) {
+  return {
+    status: graph.terminal.status,
+    workflow_id: PLAN.workflow_id,
+    tasks: taskResults,
+    calibrations: graph.calibrations,
+    blocked: [graph.terminal],
+  }
+}
 const blockedTasks = Object.values(taskResults).filter((result) => result.status !== 'VERIFIED')
 if (blockedTasks.length) {
   const status = blockedTasks.some((result) => result.status === 'AWAITING_SCOPE_APPROVAL')
     ? 'AWAITING_SCOPE_APPROVAL'
     : 'BLOCKED'
-  return { status, workflow_id: PLAN.workflow_id, tasks: taskResults, blocked: blockedTasks }
+  return {
+    status,
+    workflow_id: PLAN.workflow_id,
+    tasks: taskResults,
+    calibrations: graph.calibrations,
+    blocked: blockedTasks,
+  }
 }
 
 phase('Final gate')
 const finalGate = await runFinalGate(taskResults)
-return { status: finalGate.status, workflow_id: PLAN.workflow_id, tasks: taskResults, final_gate: finalGate }
+return {
+  status: finalGate.status,
+  workflow_id: PLAN.workflow_id,
+  tasks: taskResults,
+  calibrations: graph.calibrations,
+  final_gate: finalGate,
+}

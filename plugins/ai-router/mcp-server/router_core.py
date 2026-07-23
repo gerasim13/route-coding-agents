@@ -77,10 +77,25 @@ ROLES = {
     "planner",
     "plan-griller",
     "plan-critic",
+    "calibrator",
     "diagnostician",
     "test-intent-verifier",
 }
 COMPLEXITY_LEVELS = {"routine": 1, "strong": 2, "frontier": 3}
+DEFAULT_PLANNING_ROUTES = {
+    "planners": {
+        "routine": "claude-haiku",
+        "strong": "claude-sonnet",
+        "frontier": "claude-opus",
+    },
+    "critics": {
+        "routine": "codex-terra",
+        "strong": "codex-sol",
+        "frontier": "codex-sol",
+    },
+    "strong_griller": "corporate-pro",
+    "frontier_grillers": ["codex-sol", "claude-opus"],
+}
 ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 SECRET_PATH_RE = re.compile(r"(^|/)(\.env(?:\..*)?|[^/]*(?:credential|secret)[^/]*)($|/)", re.IGNORECASE)
 GLOBAL_CLEAN_CHECK_RE = re.compile(
@@ -93,6 +108,28 @@ ZERO_TOLERANCE_BYPASS_RE = re.compile(
     r"\b(?:fail|error).{0,80}\bignore\b|"
     r"\bpre[- ]existing\b.{0,80}\b(?:allow|ignore|skip|acceptable|ok(?:ay)?)\b|"
     r"\b(?:allow|skip)\b.{0,80}\bpre[- ]existing\b"
+    r")",
+    re.IGNORECASE,
+)
+FRONTIER_PLANNING_RE = re.compile(
+    r"(?:"
+    r"\barchitect(?:ure|ural)?\b|\bmigrat(?:e|ion)\b|\bschema\b|\bprotocol\b|"
+    r"\bconcurren(?:cy|t)\b|\brace condition\b|\bdeadlock\b|\bdistributed\b|"
+    r"\bsecurity\b|\bauth(?:entication|orization)?\b|\bencrypt(?:ion|ed)?\b|"
+    r"\bbreaking change\b|\bpublic api\b|\bdata loss\b|\bcross[- ]system\b|"
+    r"\blarge[- ]scale\b|\bentire (?:repo|codebase)\b|"
+    r"архитект|миграц|схем|протокол|конкур|гонк|дедлок|распредел|"
+    r"безопас|авторизац|аутентификац|шифров|публичн.{0,12}api|потер.{0,12}данн"
+    r")",
+    re.IGNORECASE,
+)
+ROUTINE_PLANNING_RE = re.compile(
+    r"(?:"
+    r"\btypo\b|\bspelling\b|\bcomment\b|\bformat(?:ting)?\b|\bdocs?\b|"
+    r"\breadme\b|\brename\b|\bversion bump\b|\bsingle file\b|\bexactly\b|"
+    r"\bone file\b|\btext file\b|"
+    r"опечат|комментар|формат|документац|ридми|переимен|версии|один файл|"
+    r"ровно|текстов.{0,8}файл"
     r")",
     re.IGNORECASE,
 )
@@ -292,9 +329,7 @@ def validate_plan(plan: Any, *, check_directory: bool = True) -> dict[str, Any]:
     critic_route = planning.get("critic_route")
     for field, route in (("planning.planner_route", planner_route), ("planning.critic_route", critic_route)):
         if route not in ROUTES:
-            errors.append(f"{field} must be a known frontier route")
-        elif ROUTES[route].capability < 3:
-            errors.append(f"{field} must use frontier capability")
+            errors.append(f"{field} must be a known route")
     if planner_route in ROUTES and critic_route in ROUTES:
         if ROUTES[planner_route].provider == ROUTES[critic_route].provider:
             errors.append("planning planner and critic must use independent providers")
@@ -445,6 +480,14 @@ def validate_plan(plan: Any, *, check_directory: bool = True) -> dict[str, Any]:
         errors.append("task dependencies contain a cycle")
     if grill_level in COMPLEXITY_LEVELS and task_complexities:
         required_level = max(task_complexities)
+        if planner_route in ROUTES and ROUTES[planner_route].capability < required_level:
+            errors.append(
+                "planning.planner_route is weaker than the highest task complexity"
+            )
+        if critic_route in ROUTES and ROUTES[critic_route].capability < required_level:
+            errors.append(
+                "planning.critic_route is weaker than the highest task complexity"
+            )
         if COMPLEXITY_LEVELS[grill_level] < required_level:
             errors.append(
                 "planning.grill.level cannot be lower than the highest task complexity"
@@ -561,10 +604,33 @@ def _atomic_json(path: Path, value: Any) -> None:
 
 def plan_summary(plan: dict[str, Any], plan_id: str) -> dict[str, Any]:
     tasks = []
-    deterministic_check_nodes = len(plan["final_gate"]["test_plan"]["regression"])
+    regression_checks = plan["final_gate"]["test_plan"]["regression"]
+    deterministic_command_count = len(regression_checks)
+    deterministic_check_suite_nodes = 1 if regression_checks else 0
     for task in plan["tasks"]:
-        deterministic_check_nodes += len(task["test_plan"]["targeted"])
-        deterministic_check_nodes += len(task["test_plan"]["affected"])
+        targeted_checks = task["test_plan"]["targeted"]
+        affected_checks = task["test_plan"]["affected"]
+        deterministic_command_count += len(targeted_checks) + len(affected_checks)
+        if targeted_checks:
+            deterministic_check_suite_nodes += 1
+        targeted_keys = {
+            (
+                check["command"],
+                check.get("rerun_command"),
+                check.get("timeout_seconds", 3600),
+            )
+            for check in targeted_checks
+        }
+        if any(
+            (
+                check["command"],
+                check.get("rerun_command"),
+                check.get("timeout_seconds", 3600),
+            )
+            not in targeted_keys
+            for check in affected_checks
+        ):
+            deterministic_check_suite_nodes += 1
         tasks.append(
             {
                 "id": task["id"],
@@ -587,7 +653,23 @@ def plan_summary(plan: dict[str, Any], plan_id: str) -> dict[str, Any]:
         )
     grill = plan["planning"]["grill"]
     planning_agents = 2 + len(grill["routes"]) * grill["rounds"]
-    execution_agents = len(tasks) * 2 + deterministic_check_nodes + 1
+    unresolved = {task["id"]: set(task["dependencies"]) for task in plan["tasks"]}
+    completed: set[str] = set()
+    dependency_waves = 0
+    while unresolved:
+        ready = {task_id for task_id, dependencies in unresolved.items() if dependencies <= completed}
+        if not ready:
+            break
+        dependency_waves += 1
+        completed.update(ready)
+        for task_id in ready:
+            unresolved.pop(task_id)
+    execution_agents = (
+        len(tasks) * 2
+        + deterministic_check_suite_nodes
+        + dependency_waves
+        + 1
+    )
     return {
         "plan_id": plan_id,
         "workflow_id": plan["workflow_id"],
@@ -612,6 +694,9 @@ def plan_summary(plan: dict[str, Any], plan_id: str) -> dict[str, Any]:
             route_summary(route) for route in plan["final_gate"]["diagnosis_routes"]
         ],
         "minimum_planning_model_agents": planning_agents,
+        "deterministic_command_count": deterministic_command_count,
+        "deterministic_check_suite_nodes": deterministic_check_suite_nodes,
+        "dependency_wave_count": dependency_waves,
         "minimum_execution_visible_agents": execution_agents,
         "minimum_visible_agents": planning_agents + execution_agents,
         "minimum_visible_model_agents": execution_agents,
@@ -633,18 +718,261 @@ def route_summary(alias: str) -> dict[str, Any]:
     }
 
 
+def _json_digest(value: Any) -> str:
+    encoded = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def classify_planning_tier(objective: str, inspection: dict[str, Any]) -> tuple[str, list[str]]:
+    tracked = inspection.get("tracked_file_count")
+    changed = inspection.get("changed_file_count")
+    tracked_count = tracked if isinstance(tracked, int) and not isinstance(tracked, bool) else 0
+    changed_count = changed if isinstance(changed, int) and not isinstance(changed, bool) else 0
+    signals: list[str] = []
+
+    if FRONTIER_PLANNING_RE.search(objective):
+        signals.append("objective contains architecture, contract, migration, concurrency, or security risk")
+        return "frontier", signals
+    if tracked_count >= 5_000 or changed_count >= 50:
+        signals.append(
+            f"repository breadth is high ({tracked_count} tracked, {changed_count} currently changed)"
+        )
+        return "frontier", signals
+    if ROUTINE_PLANNING_RE.search(objective) and tracked_count <= 200 and changed_count <= 10:
+        signals.append("bounded mechanical or single-artifact objective")
+        signals.append(f"small inspected scope ({tracked_count} tracked, {changed_count} changed)")
+        return "routine", signals
+    signals.append("substantive software task without frontier-risk signals")
+    return "strong", signals
+
+
+def validate_planning_request(request: Any) -> dict[str, Any]:
+    errors: list[str] = []
+    if not isinstance(request, dict):
+        raise PlanValidationError(["planning request must be an object"])
+    normalized = json.loads(json.dumps(request))
+    session_id = normalized.get("session_id")
+    if not isinstance(session_id, str) or not re.fullmatch(r"[a-f0-9]{32}", session_id):
+        errors.append("session_id must be a 32-character lowercase hex id")
+    objective = normalized.get("objective")
+    if not isinstance(objective, str) or not objective.strip():
+        errors.append("objective must be a non-empty string")
+    working_directory = normalized.get("working_directory")
+    if not isinstance(working_directory, str) or not os.path.isabs(working_directory):
+        errors.append("working_directory must be an absolute path")
+    elif not os.path.isdir(working_directory):
+        errors.append("working_directory must exist")
+    inspection = normalized.get("inspection")
+    if not isinstance(inspection, dict):
+        errors.append("inspection must be the object returned by inspect_workspace")
+        inspection = {}
+    elif working_directory and inspection.get("worktree") != str(Path(working_directory).resolve()):
+        errors.append("inspection.worktree must match working_directory")
+    tasks = normalized.setdefault("discovery_tasks", [])
+    if not isinstance(tasks, list):
+        errors.append("discovery_tasks must be an array")
+        tasks = []
+    task_ids: set[str] = set()
+    for index, task in enumerate(tasks):
+        field = f"discovery_tasks[{index}]"
+        if not isinstance(task, dict):
+            errors.append(f"{field} must be an object")
+            continue
+        task_id = task.get("id")
+        if not isinstance(task_id, str) or not ID_RE.fullmatch(task_id):
+            errors.append(f"{field}.id must be a safe identifier")
+        elif task_id in task_ids:
+            errors.append(f"{field}.id must be unique")
+        else:
+            task_ids.add(task_id)
+        if not isinstance(task.get("objective"), str) or not task["objective"].strip():
+            errors.append(f"{field}.objective must be non-empty")
+        route = task.get("route")
+        if route not in ROUTES:
+            errors.append(f"{field}.route is unknown")
+        elif ROUTES[route].premium:
+            errors.append(f"{field}.route cannot use a premium route during automatic discovery")
+    initial_tier, tier_signals = classify_planning_tier(
+        objective if isinstance(objective, str) else "",
+        inspection,
+    )
+    normalized["initial_planning_tier"] = initial_tier
+    normalized["tier_signals"] = tier_signals
+
+    routes = normalized.setdefault("routes", {})
+    if not isinstance(routes, dict):
+        errors.append("routes must be an object")
+        routes = {}
+        normalized["routes"] = routes
+    legacy_planner = routes.pop("planner", None)
+    legacy_critic = routes.pop("critic", None)
+    planners = routes.setdefault(
+        "planners",
+        (
+            {tier: legacy_planner for tier in COMPLEXITY_LEVELS}
+            if legacy_planner is not None
+            else dict(DEFAULT_PLANNING_ROUTES["planners"])
+        ),
+    )
+    critics = routes.setdefault(
+        "critics",
+        (
+            {tier: legacy_critic for tier in COMPLEXITY_LEVELS}
+            if legacy_critic is not None
+            else dict(DEFAULT_PLANNING_ROUTES["critics"])
+        ),
+    )
+    routes.setdefault("strong_griller", DEFAULT_PLANNING_ROUTES["strong_griller"])
+    routes.setdefault(
+        "frontier_grillers",
+        list(DEFAULT_PLANNING_ROUTES["frontier_grillers"]),
+    )
+    for field, mapping in (("planners", planners), ("critics", critics)):
+        if not isinstance(mapping, dict):
+            errors.append(f"routes.{field} must be an object keyed by planning tier")
+            continue
+        for tier, capability in COMPLEXITY_LEVELS.items():
+            route = mapping.get(tier)
+            if route not in ROUTES:
+                errors.append(f"routes.{field}.{tier} is unknown")
+            elif ROUTES[route].capability < capability:
+                errors.append(
+                    f"routes.{field}.{tier} must use capability {capability} or stronger"
+                )
+            elif ROUTES[route].premium:
+                errors.append(f"routes.{field}.{tier} cannot use a premium route automatically")
+    strong_griller = routes.get("strong_griller")
+    if strong_griller not in ROUTES:
+        errors.append("routes.strong_griller is unknown")
+    elif ROUTES[strong_griller].premium:
+        errors.append("routes.strong_griller cannot use a premium route automatically")
+    frontier_grillers = routes.get("frontier_grillers")
+    if not isinstance(frontier_grillers, list) or len(frontier_grillers) < 2:
+        errors.append("routes.frontier_grillers must contain at least two routes")
+        frontier_grillers = []
+    elif any(route not in ROUTES for route in frontier_grillers):
+        errors.append("routes.frontier_grillers contains an unknown route")
+    if isinstance(planners, dict) and isinstance(critics, dict):
+        for tier in COMPLEXITY_LEVELS:
+            planner = planners.get(tier)
+            critic = critics.get(tier)
+            if (
+                planner in ROUTES
+                and critic in ROUTES
+                and ROUTES[planner].provider == ROUTES[critic].provider
+            ):
+                errors.append(f"{tier} planner and critic must use independent providers")
+    if strong_griller in ROUTES and ROUTES[strong_griller].capability < 2:
+        errors.append("routes.strong_griller must be strong capability or higher")
+    if frontier_grillers and all(route in ROUTES for route in frontier_grillers):
+        if any(ROUTES[route].capability < 3 for route in frontier_grillers):
+            errors.append("frontier grillers must use frontier capability")
+        if len({ROUTES[route].provider for route in frontier_grillers}) < 2:
+            errors.append("frontier grillers must use independent providers")
+    normalized.setdefault("context", {})
+    if not isinstance(normalized["context"], (dict, list, str)):
+        errors.append("context must be an object, array, or string")
+    normalized.setdefault("planning_budget_usd", None)
+    budget = normalized["planning_budget_usd"]
+    if budget is not None and (
+        not isinstance(budget, (int, float))
+        or isinstance(budget, bool)
+        or budget <= 0
+    ):
+        errors.append("planning_budget_usd must be null or positive")
+    if errors:
+        raise PlanValidationError(errors)
+    return normalized
+
+
+def compile_planning_workflow(request: dict[str, Any], template_path: Path) -> dict[str, Any]:
+    request = validate_planning_request(request)
+    template = template_path.read_text(encoding="utf-8")
+    spec_marker = "/*__AI_ROUTER_PLANNING_SPEC__*/ null"
+    meta_marker = "/*__AI_ROUTER_PLANNING_META__*/ null"
+    if template.count(spec_marker) != 1 or template.count(meta_marker) != 1:
+        raise RuntimeError("planning workflow template markers are missing or duplicated")
+    compilation_id = uuid.uuid4().hex
+    round_number = int(request.get("round", 1))
+    workflow_id = f"planning-{request['session_id'][:8]}-r{round_number}"
+    workflow_meta = {
+        "name": workflow_id,
+        "description": (
+            "Visible adaptive-tier architecture, discovery, grill, and RoutePlan "
+            f"workflow: {request['objective']}"
+        ),
+        "phases": [
+            {"title": "Discover", "detail": "Run only the bounded read-only discovery that local inspection could not answer"},
+            {"title": "Plan", "detail": "Create the architecture envelope and detailed immediate execution wave"},
+            {"title": "Grill", "detail": "Challenge architecture and the immediate wave without over-planning distant work"},
+            {"title": "Critique", "detail": "Independently verify the complete RoutePlan, routing, checks, and cost"},
+        ],
+    }
+    source = template.replace(
+        meta_marker,
+        json.dumps(workflow_meta, ensure_ascii=False, separators=(",", ":")),
+    )
+    source = source.replace(
+        spec_marker,
+        json.dumps(request, ensure_ascii=False, separators=(",", ":")),
+    )
+    workflow_dir = state_directory() / "workflows"
+    workflow_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    script_path = workflow_dir / f"{compilation_id}-{workflow_id}.js"
+    descriptor = os.open(script_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        handle.write(source)
+    script_sha256 = hashlib.sha256(source.encode("utf-8")).hexdigest()
+    payload = {
+        "compilation_id": compilation_id,
+        "session_id": request["session_id"],
+        "workflow_id": workflow_id,
+        "status": "compiled",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "script_path": str(script_path),
+        "script_sha256": script_sha256,
+        "request_digest": _json_digest(request),
+    }
+    _atomic_json(
+        state_directory() / "planning-compilations" / f"{compilation_id}.json",
+        payload,
+    )
+    return {
+        "compilation_id": compilation_id,
+        "session_id": request["session_id"],
+        "workflow_id": workflow_id,
+        "script_path": str(script_path),
+        "script_sha256": script_sha256,
+        "discovery_agents": len(request["discovery_tasks"]),
+        "initial_planning_tier": request["initial_planning_tier"],
+        "tier_signals": request["tier_signals"],
+        "planning_routes": request["routes"],
+        "instruction": "Launch the native Workflow tool with scriptPath exactly as returned.",
+    }
+
+
 def prepare_plan(plan: dict[str, Any]) -> dict[str, Any]:
     validate_plan(plan)
     plan_id = uuid.uuid4().hex
+    digest = _json_digest(plan)
     payload = {
         "plan_id": plan_id,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "status": "pending-approval",
+        "plan_digest": digest,
         "plan": plan,
     }
     path = state_directory() / "plans" / f"{plan_id}.json"
     _atomic_json(path, payload)
-    return plan_summary(plan, plan_id)
+    summary = plan_summary(plan, plan_id)
+    summary["plan_digest"] = digest
+    summary["session_id"] = plan["planning"].get("session_id")
+    return summary
 
 
 def compile_workflow(plan_id: str, template_path: Path) -> dict[str, Any]:
@@ -669,6 +997,7 @@ def compile_workflow(plan_id: str, template_path: Path) -> dict[str, Any]:
             {"title": "Execute", "detail": "Run approved task workers; independent tasks may run concurrently"},
             {"title": "Check", "detail": "Run deterministic targeted and affected checks under a worktree lease"},
             {"title": "Verify", "detail": "Independently inspect every worker and any existing-test changes"},
+            {"title": "Calibrate", "detail": "After each dependency wave, compare current evidence with the architecture and replan in scope when drift is confirmed"},
             {"title": "Escalate", "detail": "Diagnose every failure, repair at the evidence-appropriate tier, and replan at frontier"},
             {"title": "Final gate", "detail": "Run the complete mandatory regression suite, then verify the combined worktree"},
         ],
@@ -681,14 +1010,19 @@ def compile_workflow(plan_id: str, template_path: Path) -> dict[str, Any]:
     descriptor = os.open(script_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
         handle.write(source)
+    script_sha256 = hashlib.sha256(source.encode("utf-8")).hexdigest()
     payload["status"] = "compiled"
     payload["compiled_at"] = datetime.now(timezone.utc).isoformat()
     payload["script_path"] = str(script_path)
+    payload["script_sha256"] = script_sha256
     _atomic_json(plan_path, payload)
     return {
         "plan_id": plan_id,
         "workflow_id": plan["workflow_id"],
+        "session_id": plan["planning"].get("session_id"),
+        "plan_digest": payload.get("plan_digest") or _json_digest(plan),
         "script_path": str(script_path),
+        "script_sha256": script_sha256,
         "tasks": len(plan["tasks"]),
         "instruction": "Launch the native Workflow tool with scriptPath exactly as returned.",
     }
@@ -952,6 +1286,49 @@ def run_delegate(arguments: dict[str, Any], plugin_root: Path, store: UsageStore
     if not isinstance(timeout_seconds, int) or isinstance(timeout_seconds, bool) or not 30 <= timeout_seconds <= 14400:
         raise ValueError("timeout_seconds must be between 30 and 14400")
 
+    readiness = health([route_alias], plugin_root)
+    readiness_result = readiness["routes"][0]
+    if not readiness_result["available"]:
+        result = {
+            "status": "unavailable",
+            "workflow_id": workflow_id,
+            "task_id": task_id,
+            "role": role,
+            "route": route_alias,
+            "provider": route.provider,
+            "model": resolved_model(route_alias),
+            "profile": profile,
+            "duration_ms": 0,
+            "return_code": None,
+            "output": "",
+            "usage": {},
+            "cost_usd": None,
+            "event_count": 0,
+            "error": readiness_result["detail"],
+            "readiness": readiness_result,
+            "verdict_recorded": False,
+        }
+        usage_store = store or UsageStore()
+        usage_store.append(
+            {
+                "event": "delegate",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "workflow_id": workflow_id,
+                "task_id": task_id,
+                "role": role,
+                "route": route_alias,
+                "provider": route.provider,
+                "model": result["model"],
+                "profile": profile,
+                "status": "unavailable",
+                "duration_ms": 0,
+                "usage": {},
+                "cost_usd": None,
+                "prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+            }
+        )
+        return result
+
     command = [
         str(router_runner(plugin_root)),
         "--profile",
@@ -1017,6 +1394,7 @@ def run_delegate(arguments: dict[str, Any], plugin_root: Path, store: UsageStore
         "cost_usd": parsed["cost_usd"],
         "event_count": parsed["event_count"],
         "error": stderr.strip()[-4000:] if status != "completed" else None,
+        "readiness": readiness_result,
         "verdict_recorded": False,
     }
     usage_store = store or UsageStore()
