@@ -41,13 +41,15 @@ Choose the initial level by task complexity. Do not force every task through the
 
 | Level | Routes | Use |
 |---|---|---|
-| Routine | MiniMax, direct DeepSeek | Mechanical changes with strong tests |
-| Strong | corporate LiteLLM, Codex medium, Claude Sonnet | Normal implementation, debugging, multi-file work |
-| Frontier | Codex high, Claude Opus | Ambiguity, architecture, repeated failure |
+| Routine | Claude Haiku; Codex Luna/low; MiniMax; direct DeepSeek | Mechanical changes with strong tests |
+| Strong | corporate LiteLLM; Codex Terra/medium; Claude Sonnet/medium | Normal implementation, debugging, multi-file work |
+| Frontier | Codex Sol/high; Claude Opus/high; Claude Best/high | Ambiguity, architecture, repeated failure; Best resolves to Fable when available, otherwise Opus |
 | Specialist | Kimi K3 | Explicitly approved long-context use |
 | Backup | OpenRouter | Only when an adequate preferred route is unavailable |
 
 When routes are equally adequate, prefer corporate LiteLLM, Codex, or available Claude subscription capacity; then MiniMax; then direct DeepSeek; then OpenRouter.
+
+Treat model family and reasoning effort as separate choices. Use `claude-haiku`, `claude-sonnet`, and `claude-opus` for explicit native Claude tiers; use `claude-best` only at the hardest frontier step so Claude Code can select Fable when entitled and otherwise fall back to Opus. Use `codex-luna`, `codex-terra`, and `codex-sol` for explicit Codex tiers. The legacy aliases `codex` and `codex-high` remain compatible with Terra/medium and Sol/high respectively. Every task declares `routine`, `strong`, or `frontier`; its initial route must match that level, while both worker and verifier ladders must end at frontier capability.
 
 ## Verify and escalate
 
@@ -72,7 +74,7 @@ Examples:
 
 ```bash
 scripts/router-run --profile build --model minimax --dir "$PWD" --worktree-confirmed --prompt "..."
-scripts/router-run --profile verify --model codex --dir "$PWD" --prompt "..."
+scripts/router-run --profile verify --model codex-terra --dir "$PWD" --prompt "..."
 ```
 
 Use `--json` when structured usage must be collected. See `references/routing-policy.md` for the detailed matrix.

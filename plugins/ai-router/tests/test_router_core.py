@@ -24,7 +24,7 @@ SPEC.loader.exec_module(router_core)
 
 def valid_plan(working_directory: str) -> dict:
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "workflow_id": "test-workflow",
         "objective": "Implement and verify a bounded change",
         "working_directory": working_directory,
@@ -42,14 +42,15 @@ def valid_plan(working_directory: str) -> dict:
                 "non_goals": ["No publication"],
                 "allowed_paths": ["src", "tests"],
                 "permission": "build",
+                "complexity": "routine",
                 "acceptance_checks": ["python3 -m unittest"],
-                "routes": ["minimax", "corporate-pro", "codex-high"],
-                "verifier_routes": ["codex", "claude-sonnet", "claude-opus"],
+                "routes": ["minimax", "corporate-pro", "codex-sol"],
+                "verifier_routes": ["codex-luna", "claude-sonnet", "claude-best"],
             }
         ],
         "final_gate": {
-            "routes": ["corporate-pro", "codex-high", "claude-opus"],
-            "verifier_routes": ["codex", "claude-opus", "codex-high"],
+            "routes": ["corporate-pro", "codex-sol", "claude-best"],
+            "verifier_routes": ["codex-terra", "claude-opus", "codex-sol"],
             "acceptance_checks": ["python3 -m unittest"],
         },
     }
@@ -78,13 +79,13 @@ class PlanValidationTests(unittest.TestCase):
 
     def test_rejects_worker_without_independent_verifier(self) -> None:
         plan = valid_plan(self.directory)
-        plan["tasks"][0]["verifier_routes"] = ["minimax", "corporate-pro", "codex-high"]
+        plan["tasks"][0]["verifier_routes"] = ["minimax", "codex-terra", "claude-opus"]
         with self.assertRaisesRegex(router_core.PlanValidationError, "independent"):
             router_core.validate_plan(plan)
 
     def test_rejects_weaker_verifier_after_escalation(self) -> None:
         plan = valid_plan(self.directory)
-        plan["tasks"][0]["verifier_routes"] = ["codex"]
+        plan["tasks"][0]["verifier_routes"] = ["codex-luna"]
         with self.assertRaisesRegex(router_core.PlanValidationError, "weaker"):
             router_core.validate_plan(plan)
 
@@ -104,7 +105,7 @@ class PlanValidationTests(unittest.TestCase):
 
     def test_rejects_openrouter_as_silent_primary(self) -> None:
         plan = valid_plan(self.directory)
-        plan["tasks"][0]["routes"] = ["openrouter-cheap", "corporate-pro", "codex-high"]
+        plan["tasks"][0]["routes"] = ["openrouter-cheap", "corporate-pro", "codex-sol"]
         with self.assertRaisesRegex(router_core.PlanValidationError, "OpenRouter"):
             router_core.validate_plan(plan)
 
@@ -119,6 +120,50 @@ class PlanValidationTests(unittest.TestCase):
         plan["final_gate"]["acceptance_checks"] = ["git status must show a clean worktree"]
         with self.assertRaisesRegex(router_core.PlanValidationError, "globally clean worktree"):
             router_core.validate_plan(plan)
+
+    def test_rejects_starting_routine_task_on_frontier(self) -> None:
+        plan = valid_plan(self.directory)
+        plan["tasks"][0]["routes"] = ["codex-sol"]
+        plan["tasks"][0]["verifier_routes"] = ["claude-opus"]
+        with self.assertRaisesRegex(router_core.PlanValidationError, "for routine complexity"):
+            router_core.validate_plan(plan)
+
+    def test_rejects_ladder_without_frontier_fallback(self) -> None:
+        plan = valid_plan(self.directory)
+        plan["tasks"][0]["routes"] = ["minimax", "corporate-pro"]
+        plan["tasks"][0]["verifier_routes"] = ["codex-luna", "claude-sonnet"]
+        with self.assertRaisesRegex(router_core.PlanValidationError, "frontier-capability fallback"):
+            router_core.validate_plan(plan)
+
+    def test_rejects_final_gate_without_frontier_fallback(self) -> None:
+        plan = valid_plan(self.directory)
+        plan["final_gate"]["routes"] = ["corporate-pro"]
+        plan["final_gate"]["verifier_routes"] = ["codex-terra"]
+        with self.assertRaisesRegex(router_core.PlanValidationError, "final_gate.routes must end"):
+            router_core.validate_plan(plan)
+
+    def test_route_catalog_has_explicit_codex_model_and_effort_tiers(self) -> None:
+        self.assertEqual(router_core.resolved_model("codex-luna"), "gpt-5.6-luna")
+        self.assertEqual(router_core.ROUTES["codex-luna"].effort, "low")
+        self.assertEqual(router_core.resolved_model("codex-terra"), "gpt-5.6-terra")
+        self.assertEqual(router_core.ROUTES["codex-terra"].effort, "medium")
+        self.assertEqual(router_core.resolved_model("codex-sol"), "gpt-5.6-sol")
+        self.assertEqual(router_core.ROUTES["codex-sol"].effort, "high")
+        self.assertEqual(router_core.resolved_model("codex"), "gpt-5.6-terra")
+        self.assertEqual(router_core.resolved_model("codex-high"), "gpt-5.6-sol")
+        self.assertEqual(router_core.ROUTES["claude-sonnet"].effort, "medium")
+        self.assertEqual(router_core.ROUTES["claude-opus"].effort, "high")
+        self.assertEqual(router_core.resolved_model("claude-best"), "best")
+        self.assertEqual(router_core.ROUTES["claude-best"].effort, "high")
+        self.assertIsNone(router_core.ROUTES["claude-haiku"].effort)
+
+    def test_plan_summary_exposes_model_and_effort_ladders(self) -> None:
+        summary = router_core.plan_summary(valid_plan(self.directory), "plan-id")
+        first_worker = summary["tasks"][0]["worker_ladder"][0]
+        self.assertEqual(first_worker["alias"], "minimax")
+        first_verifier = summary["tasks"][0]["verifier_ladder"][0]
+        self.assertEqual(first_verifier["model"], "gpt-5.6-luna")
+        self.assertEqual(first_verifier["effort"], "low")
 
 
 class DocumentationTests(unittest.TestCase):
@@ -164,8 +209,6 @@ class CompileWorkflowTests(unittest.TestCase):
             worktree = root / "repo"
             worktree.mkdir()
             plan = valid_plan(str(worktree))
-            plan["tasks"][0]["routes"] = ["minimax", "corporate-pro"]
-            plan["tasks"][0]["verifier_routes"] = ["codex", "claude-sonnet"]
             script = self._compile(root / "state", plan)
             completed = subprocess.run(
                 ["node", str(PLUGIN_ROOT / "tests" / "mock_workflow_runtime.mjs"), str(script), "escalate-once"],
@@ -189,8 +232,6 @@ class CompileWorkflowTests(unittest.TestCase):
             for index in range(10):
                 task = json.loads(json.dumps(prototype))
                 task["id"] = f"task-{index}"
-                task["routes"] = ["minimax"]
-                task["verifier_routes"] = ["codex"]
                 plan["tasks"].append(task)
             script = self._compile(root / "state", plan)
             completed = subprocess.run(
@@ -217,7 +258,7 @@ class CompileWorkflowTests(unittest.TestCase):
             result = json.loads(completed.stdout)
             self.assertEqual(result["result"]["status"], "VERIFIED")
             labels = result["labels"]
-            self.assertTrue(any("final-gate:final-gate:codex:" in label for label in labels))
+            self.assertTrue(any("final-gate:final-gate:codex-terra:" in label for label in labels))
             self.assertTrue(any("final-gate:final-gate:claude-opus:" in label for label in labels))
             self.assertFalse(any("final-repair" in label for label in labels))
 
@@ -269,6 +310,32 @@ class ParserTests(unittest.TestCase):
     def test_parses_fenced_model_json_object(self) -> None:
         parsed = router_core.parse_model_json_object('```json\n{"verdict":"PASS","checks":[]}\n```')
         self.assertEqual(parsed, {"verdict": "PASS", "checks": []})
+
+
+class RouterRunTests(unittest.TestCase):
+    def test_codex_luna_dry_run_pins_model_and_low_effort(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            completed = subprocess.run(
+                [
+                    str(PLUGIN_ROOT / "bin" / "router-run"),
+                    "--profile",
+                    "review",
+                    "--model",
+                    "codex-luna",
+                    "--dir",
+                    directory,
+                    "--prompt",
+                    "bounded check",
+                    "--dry-run",
+                ],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("model=gpt-5.6-luna", completed.stdout)
+        self.assertIn("effort=low", completed.stdout)
 
 
 class UsageAndDelegateTests(unittest.TestCase):

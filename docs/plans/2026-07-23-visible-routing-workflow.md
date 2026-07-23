@@ -79,14 +79,14 @@ flowchart TD
 
 - stable ID, objective, and expected artifact;
 - role: `worker`, `verifier`, `repair`, `frontier-replanner`, or `final-gate`;
-- primary provider/model alias and approved fallback aliases;
+- primary provider/model alias, reasoning effort, and approved fallback aliases;
 - dependencies and concurrency group;
 - allowed paths and permission mode;
 - acceptance criteria and deterministic checks;
 - expected usage or cost estimate;
 - escalation state and evidence inputs.
 
-The validator rejects cyclic plans, unknown model aliases, workers without verifiers, unapproved premium routes, and non-monotonic escalation paths.
+The validator rejects cyclic plans, unknown model aliases, workers without verifiers, unapproved premium routes, mismatches between declared task complexity and the initial route, ladders without a frontier fallback, and non-monotonic escalation paths.
 
 ## Execution and verification protocol
 
@@ -106,13 +106,15 @@ The validator rejects cyclic plans, unknown model aliases, workers without verif
 | Level | Default routes | Intended use |
 |---|---|---|
 | Local | shell, tests, formatters | Deterministic work without a model |
-| Routine | MiniMax, direct DeepSeek | Mechanical work with strong tests |
-| Strong | corporate LiteLLM, Codex medium, Claude Sonnet | Normal implementation, debugging, multi-file work |
-| Frontier | Codex high, Claude Opus | Ambiguity, architecture, repeated failure |
+| Routine | Claude Haiku; Codex Luna/low; MiniMax; direct DeepSeek | Mechanical work with strong tests |
+| Strong | corporate LiteLLM; Codex Terra/medium; Claude Sonnet/medium | Normal implementation, debugging, multi-file work |
+| Frontier | Codex Sol/high; Claude Opus/high; Claude Best/high | Ambiguity, architecture, repeated failure; Best resolves to Fable when available and otherwise Opus |
 | Specialist | Kimi K3 | Long-context or special cases with explicit approval |
 | Backup | OpenRouter | Replacement transport when an adequate preferred route is unavailable |
 
-When routes are equally adequate, prefer corporate LiteLLM, Codex, or available Claude subscription capacity; then MiniMax; then direct DeepSeek; and use OpenRouter only as backup. The exact model versions remain configurable aliases.
+When routes are equally adequate, prefer corporate LiteLLM, Codex, or available Claude subscription capacity; then MiniMax; then direct DeepSeek; and use OpenRouter only as backup. Model family and reasoning effort are explicit plan properties: the routed Codex aliases pin Luna/low, Terra/medium, or Sol/high, while native Claude pins Haiku/no-effort, Sonnet/medium, Opus/high, or Best/high. Reserve Best for the hardest frontier step; Claude Code resolves it to Fable when entitled and otherwise Opus. `codex` and `codex-high` remain compatibility aliases for Terra and Sol.
+
+The cached health pass is deliberately non-generating. It verifies local clients, authentication, provider configuration, endpoint reachability, and selected API model visibility where the provider exposes it cheaply. Claude and Codex subscription clients do not expose a reliable zero-token entitlement probe for every tier, so exact entitlement is confirmed on the first approved generation; an unavailable tier becomes failure evidence and execution continues through the already approved ladder.
 
 ## Observability and accounting
 

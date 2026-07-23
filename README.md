@@ -9,7 +9,7 @@ AI Router turns multi-model coding delegation into a visible Claude Code Dynamic
 - reset to the appropriate initial tier for each new task;
 - routed token and known API-cost accounting.
 
-Supported routes are native Claude workers, the official Codex subscription client, corporate LiteLLM, MiniMax, direct DeepSeek, and OpenRouter backup. Kimi K3 remains confirmation- and budget-gated. Antigravity is deliberately excluded.
+Supported routes are native Claude workers, the official Codex subscription client, corporate LiteLLM, MiniMax, direct DeepSeek, and OpenRouter backup. The planner selects both model tier and reasoning effort: Claude Haiku/Sonnet/Opus and Codex Luna/Terra/Sol map to routine/strong/frontier work, with low/medium/high effort where the client supports it. At the hardest Claude step, the `best` alias selects Fable when the account has access and otherwise Opus. Every escalation ladder ends at a frontier model. Kimi K3 remains confirmation- and budget-gated. Antigravity is deliberately excluded.
 
 ## Install the Claude plugin
 

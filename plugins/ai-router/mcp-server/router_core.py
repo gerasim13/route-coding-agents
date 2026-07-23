@@ -27,22 +27,48 @@ class Route:
     provider: str
     premium: bool = False
     native: bool = False
+    model: str | None = None
+    effort: str | None = None
 
 
 ROUTES: dict[str, Route] = {
     "cheap": Route("cheap", "opencode", 1, "deepseek"),
     "minimax": Route("minimax", "opencode", 1, "minimax"),
     "openrouter-cheap": Route("openrouter-cheap", "opencode", 1, "openrouter"),
+    "codex-luna": Route(
+        "codex-luna", "codex", 1, "openai-subscription", model="gpt-5.6-luna", effort="low"
+    ),
+    "claude-haiku": Route(
+        "claude-haiku", "claude", 1, "anthropic-subscription", native=True, model="haiku"
+    ),
     "corporate-pro": Route("corporate-pro", "opencode", 2, "corporate-litellm"),
-    "codex": Route("codex", "codex", 2, "openai-subscription"),
-    "claude-sonnet": Route("claude-sonnet", "claude", 2, "anthropic-subscription", native=True),
-    "codex-high": Route("codex-high", "codex", 3, "openai-subscription"),
-    "claude-opus": Route("claude-opus", "claude", 3, "anthropic-subscription", native=True),
+    "codex-terra": Route(
+        "codex-terra", "codex", 2, "openai-subscription", model="gpt-5.6-terra", effort="medium"
+    ),
+    "codex": Route(
+        "codex", "codex", 2, "openai-subscription", model="gpt-5.6-terra", effort="medium"
+    ),
+    "claude-sonnet": Route(
+        "claude-sonnet", "claude", 2, "anthropic-subscription", native=True, model="sonnet", effort="medium"
+    ),
+    "codex-sol": Route(
+        "codex-sol", "codex", 3, "openai-subscription", model="gpt-5.6-sol", effort="high"
+    ),
+    "codex-high": Route(
+        "codex-high", "codex", 3, "openai-subscription", model="gpt-5.6-sol", effort="high"
+    ),
+    "claude-opus": Route(
+        "claude-opus", "claude", 3, "anthropic-subscription", native=True, model="opus", effort="high"
+    ),
+    "claude-best": Route(
+        "claude-best", "claude", 3, "anthropic-subscription", native=True, model="best", effort="high"
+    ),
     "kimi-k3": Route("kimi-k3", "opencode", 3, "openrouter", premium=True),
 }
 
 PROFILES = {"review", "verify", "build"}
 ROLES = {"worker", "verifier", "repair", "frontier-replanner", "final-gate"}
+COMPLEXITY_LEVELS = {"routine": 1, "strong": 2, "frontier": 3}
 ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 SECRET_PATH_RE = re.compile(r"(^|/)(\.env(?:\..*)?|[^/]*(?:credential|secret)[^/]*)($|/)", re.IGNORECASE)
 GLOBAL_CLEAN_CHECK_RE = re.compile(
@@ -101,8 +127,8 @@ def validate_plan(plan: Any, *, check_directory: bool = True) -> dict[str, Any]:
     if not isinstance(plan, dict):
         raise PlanValidationError(["plan must be an object"])
 
-    if plan.get("schema_version") != 1:
-        errors.append("schema_version must be 1")
+    if plan.get("schema_version") != 2:
+        errors.append("schema_version must be 2")
     workflow_id = plan.get("workflow_id")
     if not isinstance(workflow_id, str) or not ID_RE.fullmatch(workflow_id):
         errors.append("workflow_id must match [A-Za-z0-9][A-Za-z0-9._-]{0,63}")
@@ -152,6 +178,9 @@ def validate_plan(plan: Any, *, check_directory: bool = True) -> dict[str, Any]:
         permission = task.get("permission")
         if permission not in {"review", "build"}:
             errors.append(f"{prefix}.permission must be review or build")
+        complexity = task.get("complexity")
+        if complexity not in COMPLEXITY_LEVELS:
+            errors.append(f"{prefix}.complexity must be routine, strong, or frontier")
 
         deps = _string_list(task.get("dependencies", []), f"{prefix}.dependencies", errors)
         dependencies[task_id] = deps
@@ -170,6 +199,15 @@ def validate_plan(plan: Any, *, check_directory: bool = True) -> dict[str, Any]:
         _validate_route_ladder(routes, f"{prefix}.routes", errors)
         _validate_route_ladder(verifier_routes, f"{prefix}.verifier_routes", errors)
         if routes and verifier_routes and all(route in ROUTES for route in routes + verifier_routes):
+            if complexity in COMPLEXITY_LEVELS and ROUTES[routes[0]].capability != COMPLEXITY_LEVELS[complexity]:
+                errors.append(
+                    f"{prefix}.routes must start at capability {COMPLEXITY_LEVELS[complexity]} "
+                    f"for {complexity} complexity"
+                )
+            if ROUTES[routes[-1]].capability < 3:
+                errors.append(f"{prefix}.routes must end with a frontier-capability fallback")
+            if ROUTES[verifier_routes[-1]].capability < 3:
+                errors.append(f"{prefix}.verifier_routes must end with a frontier-capability verifier")
             for route_index, worker_route in enumerate(routes):
                 verifier_route = verifier_routes[min(route_index, len(verifier_routes) - 1)]
                 if ROUTES[verifier_route].capability < ROUTES[worker_route].capability:
@@ -211,6 +249,10 @@ def validate_plan(plan: Any, *, check_directory: bool = True) -> dict[str, Any]:
                 "compare the approved scope against the pre-workflow baseline"
             )
         if final_routes and final_verifiers and all(route in ROUTES for route in final_routes + final_verifiers):
+            if ROUTES[final_routes[-1]].capability < 3:
+                errors.append("final_gate.routes must end with a frontier-capability fallback")
+            if ROUTES[final_verifiers[-1]].capability < 3:
+                errors.append("final_gate.verifier_routes must end with a frontier-capability verifier")
             for route_index, worker_route in enumerate(final_routes):
                 verifier_route = final_verifiers[min(route_index, len(final_verifiers) - 1)]
                 if ROUTES[verifier_route].capability < ROUTES[worker_route].capability:
@@ -273,9 +315,12 @@ def plan_summary(plan: dict[str, Any], plan_id: str) -> dict[str, Any]:
             {
                 "id": task["id"],
                 "permission": task["permission"],
+                "complexity": task["complexity"],
                 "dependencies": task["dependencies"],
                 "routes": task["routes"],
                 "verifier_routes": task["verifier_routes"],
+                "worker_ladder": [route_summary(route) for route in task["routes"]],
+                "verifier_ladder": [route_summary(route) for route in task["verifier_routes"]],
                 "acceptance_checks": task["acceptance_checks"],
             }
         )
@@ -286,9 +331,24 @@ def plan_summary(plan: dict[str, Any], plan_id: str) -> dict[str, Any]:
         "working_directory": plan["working_directory"],
         "tasks": tasks,
         "final_gate": plan["final_gate"],
+        "final_gate_worker_ladder": [route_summary(route) for route in plan["final_gate"]["routes"]],
+        "final_gate_verifier_ladder": [route_summary(route) for route in plan["final_gate"]["verifier_routes"]],
         "minimum_visible_model_agents": len(tasks) * 2 + 1,
         "premium_routes": plan.get("approval", {}).get("premium_routes", []),
         "max_api_budget_usd": plan.get("approval", {}).get("max_api_budget_usd"),
+    }
+
+
+def route_summary(alias: str) -> dict[str, Any]:
+    route = ROUTES[alias]
+    return {
+        "alias": alias,
+        "provider": route.provider,
+        "model": resolved_model(alias),
+        "effort": route.effort,
+        "capability": route.capability,
+        "premium": route.premium,
+        "native_claude_workflow": route.native,
     }
 
 
@@ -554,14 +614,9 @@ def _private_config() -> dict[str, Any]:
 
 
 def resolved_model(alias: str) -> str:
-    if alias == "codex":
-        return "codex subscription default (medium reasoning)"
-    if alias == "codex-high":
-        return "codex subscription default (high reasoning)"
-    if alias == "claude-sonnet":
-        return "claude sonnet"
-    if alias == "claude-opus":
-        return "claude opus"
+    route = ROUTES[alias]
+    if route.model:
+        return route.model
     mapping = {
         "corporate-pro": ("extra_litellm", "smart_model"),
         "minimax": ("minimax", "cheap_model"),
@@ -730,7 +785,17 @@ def health(routes: list[str], plugin_root: Path, *, fresh: bool = False) -> dict
         route = ROUTES[alias]
         if route.native:
             available = shutil.which("claude") is not None
-            results.append({"route": alias, "available": available, "cached": False, "detail": "claude command" if available else "claude command missing"})
+            results.append(
+                {
+                    "route": alias,
+                    "available": available,
+                    "cached": False,
+                    "model": route.model,
+                    "effort": route.effort,
+                    "entitlement_check": "on_generation",
+                    "detail": "claude command" if available else "claude command missing",
+                }
+            )
             continue
         command = [str(check)]
         if fresh:
@@ -738,7 +803,17 @@ def health(routes: list[str], plugin_root: Path, *, fresh: bool = False) -> dict
         command.append(alias)
         completed = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, timeout=30)
         detail = (completed.stdout or completed.stderr).strip()
-        results.append({"route": alias, "available": completed.returncode == 0, "cached": "cached=true" in detail, "detail": detail})
+        results.append(
+            {
+                "route": alias,
+                "available": completed.returncode == 0,
+                "cached": "cached=true" in detail,
+                "model": resolved_model(alias),
+                "effort": route.effort,
+                "entitlement_check": "on_generation" if route.engine == "codex" else "not_applicable",
+                "detail": detail,
+            }
+        )
     return {"routes": results, "all_available": all(item["available"] for item in results)}
 
 

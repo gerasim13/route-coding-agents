@@ -19,7 +19,7 @@ usage() {
   printf '%s\n' \
     'Usage: router-run --profile review|verify|build --model ALIAS --dir PATH [--prompt TEXT] [options]' \
     '' \
-    'Model aliases: cheap, minimax, corporate-pro, openrouter-cheap, codex, codex-high, kimi-k3' \
+    'Model aliases: cheap, minimax, corporate-pro, openrouter-cheap, codex-luna, codex-terra, codex-sol, codex, codex-high, kimi-k3' \
     '' \
     'Options:' \
     '  --worktree-confirmed   Required for build profile' \
@@ -69,6 +69,7 @@ case "$profile" in
 esac
 
 provider_model=""
+codex_model=""
 codex_effort=""
 
 case "$model_alias" in
@@ -76,8 +77,9 @@ case "$model_alias" in
   minimax) provider_model='router_minimax/MiniMax-M2.7' ;;
   corporate-pro) provider_model='router_litellm/cloudru/DeepSeek-V4-Pro' ;;
   openrouter-cheap) provider_model='router_openrouter/deepseek/deepseek-v4-flash' ;;
-  codex) codex_effort='medium' ;;
-  codex-high) codex_effort='high' ;;
+  codex-luna) codex_model='gpt-5.6-luna'; codex_effort='low' ;;
+  codex-terra|codex) codex_model='gpt-5.6-terra'; codex_effort='medium' ;;
+  codex-sol|codex-high) codex_model='gpt-5.6-sol'; codex_effort='high' ;;
   kimi-k3) provider_model='router_openrouter/moonshotai/kimi-k3' ;;
   *) printf 'Unknown model alias: %s\n' "$model_alias" >&2; exit 2 ;;
 esac
@@ -96,7 +98,7 @@ fi
 
 if [[ "$dry_run" == true ]]; then
   if [[ -n "$codex_effort" ]]; then
-    printf 'engine=codex profile=%s effort=%s dir=%s json=%s\n' "$profile" "$codex_effort" "$target_dir" "$json_output"
+    printf 'engine=codex profile=%s model=%s effort=%s dir=%s json=%s\n' "$profile" "$codex_model" "$codex_effort" "$target_dir" "$json_output"
   else
     printf 'engine=opencode profile=%s model=%s dir=%s json=%s\n' "$profile" "$provider_model" "$target_dir" "$json_output"
   fi
@@ -115,6 +117,7 @@ if [[ -n "$codex_effort" ]]; then
   # while omitting $CODEX_HOME/config.toml; `--ephemeral` avoids accumulating throwaway
   # sessions. Project-level configuration and AGENTS.md discovery still apply.
   codex_args=(exec --ignore-user-config --ephemeral --skip-git-repo-check --sandbox "$sandbox" -c "model_reasoning_effort=$codex_effort")
+  codex_args+=(--model "$codex_model")
   [[ "$json_output" == true ]] && codex_args+=(--json)
   cd "$target_dir"
   exec codex "${codex_args[@]}" "$prompt"

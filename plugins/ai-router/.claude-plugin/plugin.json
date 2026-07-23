@@ -1,7 +1,7 @@
 {
   "name": "ai-router",
   "displayName": "AI Router",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "description": "Visible, verified multi-model coding workflows for Claude Code.",
   "author": {
     "name": "gerasim13",

@@ -42,7 +42,7 @@ cache_store() {
   mv -f "$temp_file" "$cache_file"
 }
 
-if [[ "$model_alias" == codex || "$model_alias" == codex-high ]]; then
+if [[ "$model_alias" == codex || "$model_alias" == codex-* ]]; then
   if cache_hit 'codex-authenticated'; then
     printf 'AVAILABLE codex cached=true\n'
     exit 0

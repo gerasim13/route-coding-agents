@@ -42,11 +42,26 @@ const REPLAN_SCHEMA = {
 }
 
 function isNative(route) {
-  return route === 'claude-sonnet' || route === 'claude-opus'
+  return route === 'claude-haiku' || route === 'claude-sonnet' ||
+    route === 'claude-opus' || route === 'claude-best'
 }
 
 function nativeModel(route) {
-  return route === 'claude-opus' ? 'opus' : 'sonnet'
+  if (route === 'claude-haiku') return 'haiku'
+  if (route === 'claude-opus') return 'opus'
+  if (route === 'claude-best') return 'best'
+  return 'sonnet'
+}
+
+function nativeEffort(route) {
+  if (route === 'claude-opus' || route === 'claude-best') return 'high'
+  if (route === 'claude-sonnet') return 'medium'
+  return null
+}
+
+function withNativeEffort(route, options) {
+  const effort = nativeEffort(route)
+  return effort ? { ...options, effort } : options
 }
 
 function rolePhase(role) {
@@ -94,7 +109,6 @@ async function runExternalWorker(route, role, task, prompt, label, profile) {
     phase: rolePhase(role),
     schema: WORKER_SCHEMA,
     model: 'haiku',
-    effort: 'low',
     tools: [DELEGATE_TOOL],
     maxTurns: 4,
   })
@@ -103,14 +117,13 @@ async function runExternalWorker(route, role, task, prompt, label, profile) {
 async function runNativeWorker(route, role, task, prompt, label) {
   return agent(
     `${prompt}\n\nYou are the native Claude ${role} for this visible workflow node. Work only in ${PLAN.working_directory}. Do not commit, push, merge, rebase, reset, clean, stash, or publish. Return the requested structured report.`,
-    {
+    withNativeEffort(route, {
       label,
       phase: rolePhase(role),
       schema: WORKER_SCHEMA,
       model: nativeModel(route),
-      effort: route === 'claude-opus' ? 'high' : 'medium',
       tools: ['Read', 'Edit', 'Write', 'Glob', 'Grep', 'Bash'],
-    },
+    }),
   )
 }
 
@@ -168,7 +181,6 @@ async function runExternalVerifier(route, task, workerRoute, workerResult, attem
     phase: rolePhase(role),
     schema: VERIFIER_SCHEMA,
     model: 'haiku',
-    effort: 'low',
     tools: [DELEGATE_TOOL],
     maxTurns: 4,
   })
@@ -190,14 +202,13 @@ async function runNativeVerifier(route, task, workerRoute, workerResult, attempt
     'PASS only with evidence. On FAIL, failure_packet must include exact errors, diff scope, failed approach, and instructions for a stronger worker.',
     `Call ${RECORD_VERDICT_TOOL} after deciding. Call it exactly once with workflow_id=${PLAN.workflow_id}, task_id=${taskId}, route=${route}, the lowercase verdict, and concise evidence. This recorder does not call a model; preserve your verdict if recording fails.`,
   ].join('\n\n')
-  return agent(prompt, {
+  return agent(prompt, withNativeEffort(route, {
     label: `${role}:${taskId}:${route}:a${attempt}`,
     phase: rolePhase(role),
     schema: VERIFIER_SCHEMA,
     model: nativeModel(route),
-    effort: route === 'claude-opus' ? 'high' : 'medium',
     tools: ['Read', 'Glob', 'Grep', 'Bash', RECORD_VERDICT_TOOL],
-  })
+  }))
 }
 
 async function runVerifier(route, task, workerRoute, workerResult, attempt, finalGate = false) {
@@ -228,7 +239,7 @@ async function runExternalReplanner(route, task, evidence, cycle) {
   ].join('\n')
   return agent(wrapperPrompt, {
     label: `replan:${task.id}:${route}:c${cycle}`,
-    phase: 'Escalate', schema: REPLAN_SCHEMA, model: 'haiku', effort: 'low',
+    phase: 'Escalate', schema: REPLAN_SCHEMA, model: 'haiku',
     tools: [DELEGATE_TOOL], maxTurns: 4,
   })
 }
@@ -244,12 +255,11 @@ async function runNativeReplanner(route, task, evidence, cycle) {
     'Inspect read-only. Find a materially different approach. Do not edit files.',
     'Set can_progress=false only for a real external blocker or when no distinct evidence-based approach exists.',
   ].join('\n\n')
-  return agent(prompt, {
+  return agent(prompt, withNativeEffort(route, {
     label: `replan:${task.id}:${route}:c${cycle}`,
     phase: 'Escalate', schema: REPLAN_SCHEMA, model: nativeModel(route),
-    effort: route === 'claude-opus' ? 'high' : 'medium',
     tools: ['Read', 'Glob', 'Grep', 'Bash'],
-  })
+  }))
 }
 
 async function runReplanner(route, task, evidence, cycle) {

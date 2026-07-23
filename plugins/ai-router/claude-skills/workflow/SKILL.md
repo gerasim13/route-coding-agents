@@ -22,25 +22,35 @@ This command is an execution contract, not optional advice:
 1. Inspect only enough repository context to split the objective into bounded tasks with real acceptance checks. Inspection is not task completion.
 2. Use ToolSearch to load the `ai-router` MCP `route_catalog`, `health`, `prepare_plan`, and `compile_workflow` tools.
 3. Choose routes by task complexity, not by always starting cheap:
-   - routine: `minimax` or `cheap`;
-   - strong: `corporate-pro`, `codex`, or `claude-sonnet`;
-   - frontier: `codex-high` or `claude-opus`;
+   - routine: `claude-haiku`, `codex-luna`, `minimax`, or `cheap`;
+   - strong: `corporate-pro`, `codex-terra`, or `claude-sonnet`;
+   - frontier: `codex-sol`, `claude-opus`, or `claude-best`;
    - specialist: `kimi-k3` only after the user explicitly authorizes it and a dollar cap;
    - `openrouter-cheap` is backup-only unless the user explicitly approves it as primary.
-   Deterministic documentation comparisons, bounded grep/config inspection, formatting, and mechanical edits with a strong oracle are routine. Start them on `minimax` or `cheap` with `codex` as verifier; do not spend Opus or high-effort Codex unless evidence forces escalation.
-4. When routes are equally adequate, prefer corporate LiteLLM, Codex, or available Claude subscription capacity; then MiniMax; then direct DeepSeek; then OpenRouter.
-5. Every task must have an independent verifier route at least as capable as the corresponding worker route.
-6. Put progressively stronger routes in each task's `routes`. A confirmed failure never goes back to the same weak model.
-7. Do not impose a planning cap on independent tasks or agents. Dependencies determine sequencing; independent tasks may run concurrently. The Claude runtime itself currently enforces its documented concurrency and total-agent safety limits.
-8. Run cached `health` checks only for routes present in the proposed plan. Remove unavailable routes or keep them only as explicit pre-approved fallbacks.
-9. Treat the current worktree state as the pre-workflow baseline. Final checks may inspect `git status`, but must never require a globally clean worktree unless it was explicitly observed clean before planning. Check only approved scope and workflow-caused changes.
-10. For an all-`review` plan, use read-only oracles (content comparison, hashes captured before and after, or a scoped diff against a known baseline). The final gate stays read-only and must never launch a repair worker.
+   Deterministic documentation comparisons, bounded grep/config inspection, formatting, and mechanical edits with a strong oracle are routine. Start them on a routine route and do not spend Opus or Sol unless evidence forces escalation. Use `codex` as a compatibility alias for `codex-terra`, and `codex-high` as a compatibility alias for `codex-sol`.
+4. Treat model strength and reasoning effort as separate routing dimensions:
+   - `claude-haiku`: Haiku, no effort parameter;
+   - `claude-sonnet`: Sonnet, medium effort;
+   - `claude-opus`: Opus, high effort;
+   - `claude-best`: Fable when the account can use it, otherwise the latest Opus, high effort;
+   - `codex-luna`: `gpt-5.6-luna`, low effort;
+   - `codex-terra`: `gpt-5.6-terra`, medium effort;
+   - `codex-sol`: `gpt-5.6-sol`, high effort.
+   Do not raise effort merely because capacity remains. Raise the tier or effort only when task complexity or concrete failure evidence warrants it.
+5. When routes are equally adequate, prefer corporate LiteLLM, Codex, or available Claude subscription capacity; then MiniMax; then direct DeepSeek; then OpenRouter.
+6. Every task must declare `complexity` as `routine`, `strong`, or `frontier`. Its first worker route must match that capability, so routine models are not silently skipped and frontier work does not begin underpowered.
+7. Every task must have an independent verifier route at least as capable as the corresponding worker route.
+8. Put progressively stronger routes in each task's `routes` and end both worker and verifier ladders at frontier capability. A confirmed failure never goes back to the same weak model.
+9. Do not impose a planning cap on independent tasks or agents. Dependencies determine sequencing; independent tasks may run concurrently. The Claude runtime itself currently enforces its documented concurrency and total-agent safety limits.
+10. Run cached, non-generating `health` checks only for routes present in the proposed plan. Remove routes whose client, credentials, endpoint, or network path is unavailable. Exact Claude/Codex account entitlement is finally confirmed by the attempted generation; if it is unavailable, record that result and continue along the approved ladder.
+11. Treat the current worktree state as the pre-workflow baseline. Final checks may inspect `git status`, but must never require a globally clean worktree unless it was explicitly observed clean before planning. Check only approved scope and workflow-caused changes.
+12. For an all-`review` plan, use read-only oracles (content comparison, hashes captured before and after, or a scoped diff against a known baseline). The final gate stays read-only and must never launch a repair worker.
 
 Construct this exact plan shape:
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "workflow_id": "short-kebab-id",
   "objective": "complete objective",
   "working_directory": "/absolute/current/worktree",
@@ -58,14 +68,15 @@ Construct this exact plan shape:
       "non_goals": ["explicit exclusion"],
       "allowed_paths": ["relative/path", "tests"],
       "permission": "build",
+      "complexity": "routine",
       "acceptance_checks": ["exact deterministic command or review oracle"],
-      "routes": ["minimax", "corporate-pro", "codex-high"],
-      "verifier_routes": ["codex", "claude-sonnet", "claude-opus"]
+      "routes": ["minimax", "corporate-pro", "codex-sol"],
+      "verifier_routes": ["codex-luna", "claude-sonnet", "claude-best"]
     }
   ],
   "final_gate": {
-    "routes": ["corporate-pro", "codex-high", "claude-opus"],
-    "verifier_routes": ["codex", "claude-opus", "codex-high"],
+    "routes": ["corporate-pro", "codex-sol", "claude-best"],
+    "verifier_routes": ["codex-terra", "claude-opus", "codex-sol"],
     "acceptance_checks": ["project-specific final verification"]
   }
 }

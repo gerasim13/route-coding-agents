@@ -148,11 +148,19 @@ def call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
                     "premium": route.premium,
                     "native_claude_workflow": route.native,
                     "model": resolved_model(alias),
+                    "effort": route.effort,
                 }
             )
         return _text_result({"routes": routes})
     if name == "health":
-        routes = arguments.get("routes") or ["corporate-pro", "codex", "claude-sonnet", "minimax", "cheap", "openrouter-cheap"]
+        routes = arguments.get("routes") or [
+            "corporate-pro",
+            "codex-terra",
+            "claude-sonnet",
+            "minimax",
+            "cheap",
+            "openrouter-cheap",
+        ]
         return _text_result(health(routes, PLUGIN_ROOT, fresh=bool(arguments.get("fresh", False))))
     if name == "prepare_plan":
         return _text_result(prepare_plan(arguments.get("plan")))
@@ -176,7 +184,7 @@ def dispatch(request: dict[str, Any]) -> dict[str, Any] | None:
         result = {
             "protocolVersion": request.get("params", {}).get("protocolVersion", "2024-11-05"),
             "capabilities": {"tools": {"listChanged": False}},
-            "serverInfo": {"name": "ai-router", "version": "0.3.2"},
+            "serverInfo": {"name": "ai-router", "version": "0.4.0"},
         }
     elif method == "ping":
         result = {}

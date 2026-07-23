@@ -33,8 +33,8 @@ async function agent(_prompt, options = {}) {
   }
   if (label.startsWith('verifier:') || label.startsWith('final-gate:')) {
     const shouldFail =
-      (scenario === 'escalate-once' && label.includes(':implementation:codex:a1')) ||
-      (scenario === 'final-gate-escalate' && label.startsWith('final-gate:') && label.includes(':codex:')) ||
+      (scenario === 'escalate-once' && label.includes(':implementation:codex-luna:a1')) ||
+      (scenario === 'final-gate-escalate' && label.startsWith('final-gate:') && label.includes(':codex-terra:')) ||
       (scenario === 'final-gate-fail-all' && label.startsWith('final-gate:'))
     return {
       verdict: shouldFail ? 'FAIL' : 'PASS',
