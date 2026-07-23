@@ -21,14 +21,15 @@ This command is an execution contract, not optional advice:
 
 1. Inspect only enough repository context to split the objective into bounded tasks with real acceptance checks. Inspection is not task completion.
 2. Use ToolSearch to load the `ai-router` MCP `route_catalog`, `health`, `prepare_plan`, and `compile_workflow` tools.
-3. Choose routes by task complexity, not by always starting cheap:
+3. Even on this expert fast path, create two visible frontier planning agents from independent providers: one planner and one critic. Normally pair Claude Opus/high or Best/high with Codex Sol/high. The critic must return PASS before plan preparation. External planner or critic calls use a Haiku wrapper that calls `delegate` exactly once with `role=planner` or `role=plan-critic`.
+4. Choose routes by task complexity, not by always starting cheap:
    - routine: `claude-haiku`, `codex-luna`, `minimax`, or `cheap`;
    - strong: `corporate-pro`, `codex-terra`, or `claude-sonnet`;
    - frontier: `codex-sol`, `claude-opus`, or `claude-best`;
    - specialist: `kimi-k3` only after the user explicitly authorizes it and a dollar cap;
    - `openrouter-cheap` is backup-only unless the user explicitly approves it as primary.
    Deterministic documentation comparisons, bounded grep/config inspection, formatting, and mechanical edits with a strong oracle are routine. Start them on a routine route and do not spend Opus or Sol unless evidence forces escalation. Use `codex` as a compatibility alias for `codex-terra`, and `codex-high` as a compatibility alias for `codex-sol`.
-4. Treat model strength and reasoning effort as separate routing dimensions:
+5. Treat model strength and reasoning effort as separate routing dimensions:
    - `claude-haiku`: Haiku, no effort parameter;
    - `claude-sonnet`: Sonnet, medium effort;
    - `claude-opus`: Opus, high effort;
@@ -37,23 +38,32 @@ This command is an execution contract, not optional advice:
    - `codex-terra`: `gpt-5.6-terra`, medium effort;
    - `codex-sol`: `gpt-5.6-sol`, high effort.
    Do not raise effort merely because capacity remains. Raise the tier or effort only when task complexity or concrete failure evidence warrants it.
-5. When routes are equally adequate, prefer corporate LiteLLM, Codex, or available Claude subscription capacity; then MiniMax; then direct DeepSeek; then OpenRouter.
-6. Every task must declare `complexity` as `routine`, `strong`, or `frontier`. Its first worker route must match that capability, so routine models are not silently skipped and frontier work does not begin underpowered.
-7. Every task must have an independent verifier route at least as capable as the corresponding worker route.
-8. Put progressively stronger routes in each task's `routes` and end both worker and verifier ladders at frontier capability. A confirmed failure never goes back to the same weak model.
-9. Do not impose a planning cap on independent tasks or agents. Dependencies determine sequencing; independent tasks may run concurrently. The Claude runtime itself currently enforces its documented concurrency and total-agent safety limits.
-10. Run cached, non-generating `health` checks only for routes present in the proposed plan. Remove routes whose client, credentials, endpoint, or network path is unavailable. Exact Claude/Codex account entitlement is finally confirmed by the attempted generation; if it is unavailable, record that result and continue along the approved ladder.
-11. Treat the current worktree state as the pre-workflow baseline. Final checks may inspect `git status`, but must never require a globally clean worktree unless it was explicitly observed clean before planning. Check only approved scope and workflow-caused changes.
-12. For an all-`review` plan, use read-only oracles (content comparison, hashes captured before and after, or a scoped diff against a known baseline). The final gate stays read-only and must never launch a repair worker.
+6. When routes are equally adequate, prefer corporate LiteLLM, Codex, or available Claude subscription capacity; then MiniMax; then direct DeepSeek; then OpenRouter.
+7. Every task must declare `complexity` as `routine`, `strong`, or `frontier`. Its first worker route must match that capability, so routine models are not silently skipped and frontier work does not begin underpowered.
+8. Every task must have an independent verifier route at least as capable as the corresponding worker route, a strong-to-frontier diagnosis ladder, and an independent strong-to-frontier test-intent ladder.
+9. Put progressively stronger routes in each ladder and end every ladder at frontier capability. A confirmed failure never goes back to the same weak model.
+10. Do not impose a planning cap on independent tasks or agents. Dependencies determine sequencing; independent tasks may run concurrently. The Claude runtime itself currently enforces its documented concurrency and total-agent safety limits.
+11. Run cached, non-generating `health` checks only for routes present in the proposed plan. Remove routes whose client, credentials, endpoint, or network path is unavailable. Exact Claude/Codex account entitlement is finally confirmed by the attempted generation; if it is unavailable, record that result and continue along the approved ladder.
+12. Treat the current worktree state as the pre-workflow baseline. Final checks may inspect `git status`, but must never require a globally clean worktree unless it was explicitly observed clean before planning. Check only approved scope and workflow-caused changes. Never ignore a test failure because it is pre-existing.
+13. For an all-`review` plan, use read-only oracles (content comparison, hashes captured before and after, or a scoped diff against a known baseline). The final gate stays read-only and must never launch a repair worker.
 
 Construct this exact plan shape:
 
 ```json
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "workflow_id": "short-kebab-id",
   "objective": "complete objective",
   "working_directory": "/absolute/current/worktree",
+  "planning": {
+    "mode": "fast-path",
+    "session_id": null,
+    "discovery_performed": false,
+    "planner_route": "claude-opus",
+    "critic_route": "codex-sol",
+    "critic_verdict": "PASS",
+    "assumptions": []
+  },
   "approval": {
     "premium_routes": [],
     "max_api_budget_usd": null,
@@ -71,13 +81,23 @@ Construct this exact plan shape:
       "complexity": "routine",
       "acceptance_checks": ["exact deterministic command or review oracle"],
       "routes": ["minimax", "corporate-pro", "codex-sol"],
-      "verifier_routes": ["codex-luna", "claude-sonnet", "claude-best"]
+      "verifier_routes": ["codex-luna", "claude-sonnet", "claude-best"],
+      "diagnosis_routes": ["corporate-pro", "codex-sol"],
+      "test_intent_verifier_routes": ["codex-terra", "claude-opus"],
+      "test_plan": {
+        "targeted": [{"command": "small exact check"}],
+        "affected": [{"command": "module check", "rerun_command": "same isolated module check"}]
+      }
     }
   ],
   "final_gate": {
     "routes": ["corporate-pro", "codex-sol", "claude-best"],
     "verifier_routes": ["codex-terra", "claude-opus", "codex-sol"],
-    "acceptance_checks": ["project-specific final verification"]
+    "diagnosis_routes": ["corporate-pro", "codex-sol"],
+    "acceptance_checks": ["project-specific final verification"],
+    "test_plan": {
+      "regression": [{"command": "complete mandatory suite", "rerun_command": "same isolated suite"}]
+    }
   }
 }
 ```

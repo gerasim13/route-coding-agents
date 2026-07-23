@@ -9,6 +9,13 @@ import traceback
 from pathlib import Path
 from typing import Any
 
+from adaptive_core import (
+    checkpoint_session,
+    inspect_workspace,
+    run_check,
+    session_status,
+    start_session,
+)
 from router_core import (
     ROUTES,
     PlanValidationError,
@@ -27,6 +34,93 @@ WORKFLOW_TEMPLATE = PLUGIN_ROOT / "workflow" / "execute.template.js"
 
 
 TOOLS = [
+    {
+        "name": "start_session",
+        "description": "Start or resume one durable adaptive planning session for the canonical worktree. Stores only compact redacted state; does not call a model.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["objective", "working_directory"],
+            "properties": {
+                "objective": {"type": "string"},
+                "working_directory": {"type": "string"},
+            },
+        },
+        "annotations": {"readOnlyHint": False, "openWorldHint": False},
+    },
+    {
+        "name": "session_status",
+        "description": "Read resumable adaptive-session state by session id or canonical worktree and report whether the workspace changed.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "session_id": {"type": "string"},
+                "working_directory": {"type": "string"},
+            },
+        },
+        "annotations": {"readOnlyHint": True, "openWorldHint": False},
+    },
+    {
+        "name": "checkpoint_session",
+        "description": "Advance an adaptive session through its enforced state machine with a compact redacted checkpoint.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["session_id", "next_state", "summary"],
+            "properties": {
+                "session_id": {"type": "string"},
+                "next_state": {
+                    "type": "string",
+                    "enum": [
+                        "INSPECTING",
+                        "DISCOVERING",
+                        "AWAITING_USER_DECISION",
+                        "PLANNING",
+                        "CRITIQUING",
+                        "READY_FOR_APPROVAL",
+                        "EXECUTING",
+                        "AWAITING_SCOPE_APPROVAL",
+                        "VERIFIED",
+                        "BLOCKED",
+                    ],
+                },
+                "summary": {"type": "string"},
+                "data": {"type": "object"},
+            },
+        },
+        "annotations": {"readOnlyHint": False, "openWorldHint": False},
+    },
+    {
+        "name": "inspect_workspace",
+        "description": "Perform a lightweight, non-generating workspace inspection and discover candidate test commands without executing them or reading secret files.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["working_directory"],
+            "properties": {"working_directory": {"type": "string"}},
+        },
+        "annotations": {"readOnlyHint": True, "openWorldHint": False},
+    },
+    {
+        "name": "run_check",
+        "description": "Run one approved deterministic targeted, affected, or regression check under a worktree test lease. On failure, optionally performs exactly one explicit isolated rerun and returns redacted structured evidence.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["command", "working_directory", "level", "workflow_id", "task_id"],
+            "properties": {
+                "command": {"type": "string"},
+                "rerun_command": {"type": "string"},
+                "working_directory": {"type": "string"},
+                "level": {"type": "string", "enum": ["targeted", "affected", "regression"]},
+                "workflow_id": {"type": "string"},
+                "task_id": {"type": "string"},
+                "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 14400, "default": 3600},
+            },
+        },
+        "annotations": {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": False},
+    },
     {
         "name": "route_catalog",
         "description": "List AI Router route aliases, capability levels, provider identities, premium gates, and resolved local model names. This does not call a model.",
@@ -78,7 +172,21 @@ TOOLS = [
             "properties": {
                 "workflow_id": {"type": "string"},
                 "task_id": {"type": "string"},
-                "role": {"type": "string", "enum": ["worker", "verifier", "repair", "frontier-replanner", "final-gate"]},
+                "role": {
+                    "type": "string",
+                    "enum": [
+                        "worker",
+                        "verifier",
+                        "repair",
+                        "frontier-replanner",
+                        "final-gate",
+                        "discovery",
+                        "planner",
+                        "plan-critic",
+                        "diagnostician",
+                        "test-intent-verifier",
+                    ],
+                },
                 "route": {"type": "string"},
                 "profile": {"type": "string", "enum": ["review", "verify", "build"]},
                 "working_directory": {"type": "string"},
@@ -136,6 +244,38 @@ def _text_result(value: Any, *, is_error: bool = False) -> dict[str, Any]:
 
 
 def call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    if name == "start_session":
+        return _text_result(start_session(arguments.get("objective", ""), arguments.get("working_directory", "")))
+    if name == "session_status":
+        return _text_result(
+            session_status(
+                session_id=arguments.get("session_id"),
+                working_directory=arguments.get("working_directory"),
+            )
+        )
+    if name == "checkpoint_session":
+        return _text_result(
+            checkpoint_session(
+                arguments.get("session_id", ""),
+                arguments.get("next_state", ""),
+                arguments.get("summary", ""),
+                arguments.get("data"),
+            )
+        )
+    if name == "inspect_workspace":
+        return _text_result(inspect_workspace(arguments.get("working_directory", "")))
+    if name == "run_check":
+        return _text_result(
+            run_check(
+                command=arguments.get("command", ""),
+                rerun_command=arguments.get("rerun_command"),
+                working_directory=arguments.get("working_directory", ""),
+                level=arguments.get("level", ""),
+                workflow_id=arguments.get("workflow_id", ""),
+                task_id=arguments.get("task_id", ""),
+                timeout_seconds=arguments.get("timeout_seconds", 3600),
+            )
+        )
     if name == "route_catalog":
         routes = []
         for alias, route in ROUTES.items():
@@ -184,7 +324,7 @@ def dispatch(request: dict[str, Any]) -> dict[str, Any] | None:
         result = {
             "protocolVersion": request.get("params", {}).get("protocolVersion", "2024-11-05"),
             "capabilities": {"tools": {"listChanged": False}},
-            "serverInfo": {"name": "ai-router", "version": "0.4.0"},
+            "serverInfo": {"name": "ai-router", "version": "0.5.0"},
         }
     elif method == "ping":
         result = {}

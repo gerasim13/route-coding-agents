@@ -11,4 +11,4 @@ Use ToolSearch to load `ai-router` MCP `route_catalog` and `health`. List the co
 
 Also run `"${CLAUDE_PLUGIN_ROOT}/bin/router-doctor"` and report each failing prerequisite. These checks do not generate model output. Never print keys, proxy credentials, private configuration contents, or environment values.
 
-State that invoking this slash command still uses the current Claude session even though the provider checks themselves do not generate routed model output. End successful reports with the exact next-step form `/ai-router:workflow <software task>`.
+State that invoking this slash command still uses the current Claude session even though the provider checks themselves do not generate routed model output. End successful reports with the exact next-step form `/ai-router:start <rough software goal>`.

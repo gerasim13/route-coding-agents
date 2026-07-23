@@ -67,12 +67,32 @@ ROUTES: dict[str, Route] = {
 }
 
 PROFILES = {"review", "verify", "build"}
-ROLES = {"worker", "verifier", "repair", "frontier-replanner", "final-gate"}
+ROLES = {
+    "worker",
+    "verifier",
+    "repair",
+    "frontier-replanner",
+    "final-gate",
+    "discovery",
+    "planner",
+    "plan-critic",
+    "diagnostician",
+    "test-intent-verifier",
+}
 COMPLEXITY_LEVELS = {"routine": 1, "strong": 2, "frontier": 3}
 ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 SECRET_PATH_RE = re.compile(r"(^|/)(\.env(?:\..*)?|[^/]*(?:credential|secret)[^/]*)($|/)", re.IGNORECASE)
 GLOBAL_CLEAN_CHECK_RE = re.compile(
     r"(?:\bgit\s+status\b.{0,80}\bclean\b|\bclean\b.{0,40}\bworktree\b|\bworktree\b.{0,40}\bclean\b)",
+    re.IGNORECASE,
+)
+ZERO_TOLERANCE_BYPASS_RE = re.compile(
+    r"(?:"
+    r"\bignore\b.{0,80}\b(?:fail|error)|"
+    r"\b(?:fail|error).{0,80}\bignore\b|"
+    r"\bpre[- ]existing\b.{0,80}\b(?:allow|ignore|skip|acceptable|ok(?:ay)?)\b|"
+    r"\b(?:allow|skip)\b.{0,80}\bpre[- ]existing\b"
+    r")",
     re.IGNORECASE,
 )
 
@@ -102,6 +122,49 @@ def _validate_route_ladder(routes: list[str], field: str, errors: list[str]) -> 
         errors.append(f"{field} must be ordered from weaker to stronger capability")
 
 
+def _validate_strong_frontier_ladder(routes: list[str], field: str, errors: list[str]) -> None:
+    _validate_route_ladder(routes, field, errors)
+    if not routes or not all(route in ROUTES for route in routes):
+        return
+    if ROUTES[routes[0]].capability < 2:
+        errors.append(f"{field} must start at capability 2 or stronger")
+    if ROUTES[routes[-1]].capability < 3:
+        errors.append(f"{field} must end with a frontier-capability fallback")
+
+
+def _validate_check_specs(value: Any, field: str, errors: list[str], *, allow_empty: bool = False) -> list[dict[str, str]]:
+    if not isinstance(value, list) or (not allow_empty and not value):
+        errors.append(f"{field} must be a non-empty list of check objects")
+        return []
+    result: list[dict[str, str]] = []
+    for index, item in enumerate(value):
+        prefix = f"{field}[{index}]"
+        if not isinstance(item, dict):
+            errors.append(f"{prefix} must be an object")
+            continue
+        unknown = set(item).difference({"command", "rerun_command", "timeout_seconds"})
+        if unknown:
+            errors.append(f"{prefix} contains unknown fields: {', '.join(sorted(unknown))}")
+        command = item.get("command")
+        if not isinstance(command, str) or not command.strip():
+            errors.append(f"{prefix}.command must be a non-empty string")
+            continue
+        rerun = item.get("rerun_command")
+        if rerun is not None and (not isinstance(rerun, str) or not rerun.strip()):
+            errors.append(f"{prefix}.rerun_command must be a non-empty string or null")
+        timeout = item.get("timeout_seconds")
+        if timeout is not None and (
+            not isinstance(timeout, int) or isinstance(timeout, bool) or not 1 <= timeout <= 14_400
+        ):
+            errors.append(f"{prefix}.timeout_seconds must be between 1 and 14400")
+        if ZERO_TOLERANCE_BYPASS_RE.search(command) or (
+            isinstance(rerun, str) and ZERO_TOLERANCE_BYPASS_RE.search(rerun)
+        ):
+            errors.append(f"{prefix} violates zero-tolerance failure handling")
+        result.append(item)
+    return result
+
+
 def _has_cycle(task_ids: set[str], dependencies: dict[str, list[str]]) -> bool:
     visiting: set[str] = set()
     visited: set[str] = set()
@@ -127,8 +190,8 @@ def validate_plan(plan: Any, *, check_directory: bool = True) -> dict[str, Any]:
     if not isinstance(plan, dict):
         raise PlanValidationError(["plan must be an object"])
 
-    if plan.get("schema_version") != 2:
-        errors.append("schema_version must be 2")
+    if plan.get("schema_version") != 3:
+        errors.append("schema_version must be 3")
     workflow_id = plan.get("workflow_id")
     if not isinstance(workflow_id, str) or not ID_RE.fullmatch(workflow_id):
         errors.append("workflow_id must match [A-Za-z0-9][A-Za-z0-9._-]{0,63}")
@@ -140,6 +203,39 @@ def validate_plan(plan: Any, *, check_directory: bool = True) -> dict[str, Any]:
         errors.append("working_directory must be an absolute path")
     elif check_directory and not os.path.isdir(working_directory):
         errors.append("working_directory must exist")
+
+    planning = plan.get("planning")
+    if not isinstance(planning, dict):
+        errors.append("planning must be an object")
+        planning = {}
+    planning_mode = planning.get("mode")
+    if planning_mode not in {"adaptive", "fast-path"}:
+        errors.append("planning.mode must be adaptive or fast-path")
+    session_id = planning.get("session_id")
+    if planning_mode == "adaptive" and (
+        not isinstance(session_id, str) or not re.fullmatch(r"[a-f0-9]{32}", session_id)
+    ):
+        errors.append("planning.session_id must be a 32-character lowercase hex id in adaptive mode")
+    if planning_mode == "fast-path" and session_id is not None and (
+        not isinstance(session_id, str) or not re.fullmatch(r"[a-f0-9]{32}", session_id)
+    ):
+        errors.append("planning.session_id must be null or a 32-character lowercase hex id")
+    if not isinstance(planning.get("discovery_performed"), bool):
+        errors.append("planning.discovery_performed must be boolean")
+    assumptions = _string_list(planning.get("assumptions", []), "planning.assumptions", errors)
+    del assumptions
+    planner_route = planning.get("planner_route")
+    critic_route = planning.get("critic_route")
+    for field, route in (("planning.planner_route", planner_route), ("planning.critic_route", critic_route)):
+        if route not in ROUTES:
+            errors.append(f"{field} must be a known frontier route")
+        elif ROUTES[route].capability < 3:
+            errors.append(f"{field} must use frontier capability")
+    if planner_route in ROUTES and critic_route in ROUTES:
+        if ROUTES[planner_route].provider == ROUTES[critic_route].provider:
+            errors.append("planning planner and critic must use independent providers")
+    if planning.get("critic_verdict") != "PASS":
+        errors.append("planning.critic_verdict must be PASS before execution")
 
     approval = plan.get("approval", {})
     if not isinstance(approval, dict):
@@ -192,12 +288,52 @@ def validate_plan(plan: Any, *, check_directory: bool = True) -> dict[str, Any]:
                 errors.append(f"{prefix}.allowed_paths must stay inside working_directory: {allowed_path}")
             if SECRET_PATH_RE.search(normalized):
                 errors.append(f"{prefix}.allowed_paths contains a protected path: {allowed_path}")
-        _string_list(task.get("acceptance_checks", []), f"{prefix}.acceptance_checks", errors, allow_empty=False)
+        acceptance_checks = _string_list(
+            task.get("acceptance_checks", []), f"{prefix}.acceptance_checks", errors, allow_empty=False
+        )
+        if any(ZERO_TOLERANCE_BYPASS_RE.search(check) for check in acceptance_checks):
+            errors.append(f"{prefix}.acceptance_checks violates zero-tolerance failure handling")
 
         routes = _string_list(task.get("routes", []), f"{prefix}.routes", errors, allow_empty=False)
         verifier_routes = _string_list(task.get("verifier_routes", []), f"{prefix}.verifier_routes", errors, allow_empty=False)
+        diagnosis_routes = _string_list(
+            task.get("diagnosis_routes", []), f"{prefix}.diagnosis_routes", errors, allow_empty=False
+        )
+        test_intent_routes = _string_list(
+            task.get("test_intent_verifier_routes", []),
+            f"{prefix}.test_intent_verifier_routes",
+            errors,
+            allow_empty=False,
+        )
         _validate_route_ladder(routes, f"{prefix}.routes", errors)
         _validate_route_ladder(verifier_routes, f"{prefix}.verifier_routes", errors)
+        _validate_strong_frontier_ladder(diagnosis_routes, f"{prefix}.diagnosis_routes", errors)
+        _validate_strong_frontier_ladder(
+            test_intent_routes, f"{prefix}.test_intent_verifier_routes", errors
+        )
+        if routes and test_intent_routes and all(
+            route in ROUTES for route in routes + test_intent_routes
+        ):
+            for route_index, worker_route in enumerate(routes):
+                intent_route = test_intent_routes[min(route_index, len(test_intent_routes) - 1)]
+                if ROUTES[intent_route].capability < ROUTES[worker_route].capability:
+                    errors.append(
+                        f"{prefix}.test_intent_verifier_routes becomes weaker than the worker "
+                        f"at escalation step {route_index + 1}"
+                    )
+                    break
+                if ROUTES[worker_route].provider == ROUTES[intent_route].provider:
+                    errors.append(
+                        f"{prefix} worker and test-intent verifier must use independent providers "
+                        f"at escalation step {route_index + 1}"
+                    )
+                    break
+        test_plan = task.get("test_plan")
+        if not isinstance(test_plan, dict):
+            errors.append(f"{prefix}.test_plan must be an object")
+            test_plan = {}
+        _validate_check_specs(test_plan.get("targeted"), f"{prefix}.test_plan.targeted", errors)
+        _validate_check_specs(test_plan.get("affected"), f"{prefix}.test_plan.affected", errors)
         if routes and verifier_routes and all(route in ROUTES for route in routes + verifier_routes):
             if complexity in COMPLEXITY_LEVELS and ROUTES[routes[0]].capability != COMPLEXITY_LEVELS[complexity]:
                 errors.append(
@@ -218,7 +354,11 @@ def validate_plan(plan: Any, *, check_directory: bool = True) -> dict[str, Any]:
                     break
         if routes and routes[0] == "openrouter-cheap" and not approval.get("allow_openrouter_primary", False):
             errors.append(f"{prefix}.routes cannot start with OpenRouter unless allow_openrouter_primary is approved")
-        premium_used.update(route for route in routes + verifier_routes if route in ROUTES and ROUTES[route].premium)
+        premium_used.update(
+            route
+            for route in routes + verifier_routes + diagnosis_routes + test_intent_routes
+            if route in ROUTES and ROUTES[route].premium
+        )
 
     for task_id, deps in dependencies.items():
         for dependency in deps:
@@ -235,8 +375,17 @@ def validate_plan(plan: Any, *, check_directory: bool = True) -> dict[str, Any]:
     else:
         final_routes = _string_list(final_gate.get("routes", []), "final_gate.routes", errors, allow_empty=False)
         final_verifiers = _string_list(final_gate.get("verifier_routes", []), "final_gate.verifier_routes", errors, allow_empty=False)
+        final_diagnosis_routes = _string_list(
+            final_gate.get("diagnosis_routes", []),
+            "final_gate.diagnosis_routes",
+            errors,
+            allow_empty=False,
+        )
         _validate_route_ladder(final_routes, "final_gate.routes", errors)
         _validate_route_ladder(final_verifiers, "final_gate.verifier_routes", errors)
+        _validate_strong_frontier_ladder(
+            final_diagnosis_routes, "final_gate.diagnosis_routes", errors
+        )
         final_checks = _string_list(
             final_gate.get("acceptance_checks", []),
             "final_gate.acceptance_checks",
@@ -248,6 +397,15 @@ def validate_plan(plan: Any, *, check_directory: bool = True) -> dict[str, Any]:
                 "final_gate.acceptance_checks must not require a globally clean worktree; "
                 "compare the approved scope against the pre-workflow baseline"
             )
+        if any(ZERO_TOLERANCE_BYPASS_RE.search(check) for check in final_checks):
+            errors.append("final_gate.acceptance_checks violates zero-tolerance failure handling")
+        final_test_plan = final_gate.get("test_plan")
+        if not isinstance(final_test_plan, dict):
+            errors.append("final_gate.test_plan must be an object")
+            final_test_plan = {}
+        _validate_check_specs(
+            final_test_plan.get("regression"), "final_gate.test_plan.regression", errors
+        )
         if final_routes and final_verifiers and all(route in ROUTES for route in final_routes + final_verifiers):
             if ROUTES[final_routes[-1]].capability < 3:
                 errors.append("final_gate.routes must end with a frontier-capability fallback")
@@ -267,7 +425,17 @@ def validate_plan(plan: Any, *, check_directory: bool = True) -> dict[str, Any]:
                         f"at escalation step {route_index + 1}"
                     )
                     break
-        premium_used.update(route for route in final_routes + final_verifiers if route in ROUTES and ROUTES[route].premium)
+        premium_used.update(
+            route
+            for route in final_routes + final_verifiers + final_diagnosis_routes
+            if route in ROUTES and ROUTES[route].premium
+        )
+
+    premium_used.update(
+        route
+        for route in (planner_route, critic_route)
+        if route in ROUTES and ROUTES[route].premium
+    )
 
     missing_approvals = sorted(premium_used.difference(premium_routes))
     if missing_approvals:
@@ -319,9 +487,16 @@ def plan_summary(plan: dict[str, Any], plan_id: str) -> dict[str, Any]:
                 "dependencies": task["dependencies"],
                 "routes": task["routes"],
                 "verifier_routes": task["verifier_routes"],
+                "diagnosis_routes": task["diagnosis_routes"],
+                "test_intent_verifier_routes": task["test_intent_verifier_routes"],
                 "worker_ladder": [route_summary(route) for route in task["routes"]],
                 "verifier_ladder": [route_summary(route) for route in task["verifier_routes"]],
+                "diagnosis_ladder": [route_summary(route) for route in task["diagnosis_routes"]],
+                "test_intent_verifier_ladder": [
+                    route_summary(route) for route in task["test_intent_verifier_routes"]
+                ],
                 "acceptance_checks": task["acceptance_checks"],
+                "test_plan": task["test_plan"],
             }
         )
     return {
@@ -329,10 +504,18 @@ def plan_summary(plan: dict[str, Any], plan_id: str) -> dict[str, Any]:
         "workflow_id": plan["workflow_id"],
         "objective": plan["objective"],
         "working_directory": plan["working_directory"],
+        "planning": {
+            **plan["planning"],
+            "planner": route_summary(plan["planning"]["planner_route"]),
+            "critic": route_summary(plan["planning"]["critic_route"]),
+        },
         "tasks": tasks,
         "final_gate": plan["final_gate"],
         "final_gate_worker_ladder": [route_summary(route) for route in plan["final_gate"]["routes"]],
         "final_gate_verifier_ladder": [route_summary(route) for route in plan["final_gate"]["verifier_routes"]],
+        "final_gate_diagnosis_ladder": [
+            route_summary(route) for route in plan["final_gate"]["diagnosis_routes"]
+        ],
         "minimum_visible_model_agents": len(tasks) * 2 + 1,
         "premium_routes": plan.get("approval", {}).get("premium_routes", []),
         "max_api_budget_usd": plan.get("approval", {}).get("max_api_budget_usd"),
@@ -386,9 +569,10 @@ def compile_workflow(plan_id: str, template_path: Path) -> dict[str, Any]:
         "description": f"Visible multi-model route, verify, and escalation workflow: {plan['objective']}",
         "phases": [
             {"title": "Execute", "detail": "Run approved task workers; independent tasks may run concurrently"},
-            {"title": "Verify", "detail": "Independently inspect every worker result and run acceptance checks"},
-            {"title": "Escalate", "detail": "Move failed work to stronger models and require a new approach at frontier"},
-            {"title": "Final gate", "detail": "Verify the combined worktree before completion"},
+            {"title": "Check", "detail": "Run deterministic targeted and affected checks under a worktree lease"},
+            {"title": "Verify", "detail": "Independently inspect every worker and any existing-test changes"},
+            {"title": "Escalate", "detail": "Diagnose every failure, repair at the evidence-appropriate tier, and replan at frontier"},
+            {"title": "Final gate", "detail": "Run the complete mandatory regression suite, then verify the combined worktree"},
         ],
     }
     source = template.replace(meta_marker, json.dumps(workflow_meta, ensure_ascii=False, separators=(",", ":")))
@@ -649,8 +833,8 @@ def run_delegate(arguments: dict[str, Any], plugin_root: Path, store: UsageStore
     record_verdict_from_output = arguments.get("record_verdict_from_output", False)
     if not isinstance(record_verdict_from_output, bool):
         raise ValueError("record_verdict_from_output must be a boolean")
-    if record_verdict_from_output and role not in {"verifier", "final-gate"}:
-        raise ValueError("record_verdict_from_output is only valid for verifier and final-gate roles")
+    if record_verdict_from_output and role not in {"verifier", "test-intent-verifier", "final-gate"}:
+        raise ValueError("record_verdict_from_output is only valid for verifier roles")
     working_directory = arguments.get("working_directory")
     if not isinstance(working_directory, str) or not os.path.isabs(working_directory) or not os.path.isdir(working_directory):
         raise ValueError("working_directory must be an existing absolute path")

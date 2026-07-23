@@ -2,11 +2,15 @@
 
 AI Router turns multi-model coding delegation into a visible Claude Code Dynamic Workflow:
 
+- one adaptive entry point for rough tasks, discovery, questions, and planning;
+- two independent frontier planning agents before execution;
 - one route plan and one native approval card;
 - one inspectable workflow agent for every model call;
-- independent verification after every worker;
+- deterministic test nodes plus independent verification after every worker;
+- strong root-cause diagnosis before repair;
 - escalation from routine to strong and frontier models;
 - reset to the appropriate initial tier for each new task;
+- zero tolerance for pre-existing, flaky, timed-out, or otherwise failing tests;
 - routed token and known API-cost accounting.
 
 Supported routes are native Claude workers, the official Codex subscription client, corporate LiteLLM, MiniMax, direct DeepSeek, and OpenRouter backup. The planner selects both model tier and reasoning effort: Claude Haiku/Sonnet/Opus and Codex Luna/Terra/Sol map to routine/strong/frontier work, with low/medium/high effort where the client supports it. At the hardest Claude step, the `best` alias selects Fable when the account has access and otherwise Opus. Every escalation ladder ends at a frontier model. Kimi K3 remains confirmation- and budget-gated. Antigravity is deliberately excluded.
@@ -31,10 +35,19 @@ Start a new Claude session, then run:
 
 ```text
 /ai-router:doctor fresh
-/ai-router:workflow <software task>
+/ai-router:start <rough software goal>
 ```
 
-The full plan appears immediately before Claude's native Workflow approval card. While it runs, use `/workflows` or the Desktop Background Tasks pane to inspect phases, agents, prompts, tool calls, results, time, and Claude tokens. Use `/ai-router:usage` for routed external usage and known API cost.
+`/ai-router:start` first performs a free local inspection, routes only missing
+discovery, asks only material questions, and sends the final plan through an
+independent frontier critic. The accepted plan appears before Claude's single
+native Workflow approval card. Use `/ai-router:workflow <precise software task>`
+as the non-interactive expert fast path.
+
+While execution runs, use `/workflows` or the Desktop Background Tasks pane to
+inspect workers, deterministic checks, diagnosticians, verifiers, repairs,
+prompts, tool calls, results, time, and Claude tokens. Use `/ai-router:usage`
+for routed external usage and known API cost.
 
 Claude's auto mode may accept the Workflow card through its classifier. Switch out of auto mode before launch when you want a mandatory manual click.
 
@@ -63,7 +76,7 @@ claude plugin validate .
 python3 ~/.codex/skills/.system/skill-creator/scripts/quick_validate.py .
 ```
 
-See [SKILL.md](SKILL.md) for the portable protocol and [the accepted design](docs/plans/2026-07-23-visible-routing-workflow.md) for the full architecture and decision log.
+See [SKILL.md](SKILL.md) for the portable protocol and [the adaptive workflow design](docs/plans/2026-07-23-adaptive-start-workflow.md) for the full architecture and decision log.
 
 ## Security properties
 
@@ -73,6 +86,7 @@ See [SKILL.md](SKILL.md) for the portable protocol and [the accepted design](doc
 - no worker Git-history mutation or publication;
 - no automatic extra worktrees;
 - secrets excluded from plans, prompts, and accounting logs;
+- no successful result while any mandatory test is failing;
 - explicit premium-route approval and budget cap.
 
 ## License

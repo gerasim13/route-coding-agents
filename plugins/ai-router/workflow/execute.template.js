@@ -3,6 +3,7 @@ export const meta = /*__AI_ROUTER_META__*/ null
 const PLAN = /*__AI_ROUTER_PLAN__*/ null
 const DELEGATE_TOOL = 'mcp__plugin_ai-router_ai-router__delegate'
 const RECORD_VERDICT_TOOL = 'mcp__plugin_ai-router_ai-router__record_verdict'
+const RUN_CHECK_TOOL = 'mcp__plugin_ai-router_ai-router__run_check'
 
 const WORKER_SCHEMA = {
   type: 'object', additionalProperties: false,
@@ -41,6 +42,50 @@ const REPLAN_SCHEMA = {
   },
 }
 
+const CHECK_SCHEMA = {
+  type: 'object', additionalProperties: false,
+  required: [
+    'status', 'level', 'command', 'attempts', 'rerun_performed', 'return_code',
+    'duration_ms', 'workspace_changed', 'failure_signature', 'stdout_excerpt',
+    'stderr_excerpt', 'log_path', 'zero_tolerance',
+  ],
+  properties: {
+    status: { type: 'string', enum: ['PASS', 'FAIL', 'SUSPECTED_FLAKY', 'TIMED_OUT', 'STALE'] },
+    level: { type: 'string', enum: ['targeted', 'affected', 'regression'] },
+    command: { type: 'string' },
+    attempts: { type: 'integer' },
+    rerun_performed: { type: 'boolean' },
+    return_code: { type: ['integer', 'null'] },
+    duration_ms: { type: 'integer' },
+    workspace_changed: { type: 'boolean' },
+    failure_signature: { type: ['string', 'null'] },
+    stdout_excerpt: { type: 'string' },
+    stderr_excerpt: { type: 'string' },
+    log_path: { type: 'string' },
+    zero_tolerance: { type: 'boolean' },
+  },
+}
+
+const DIAGNOSIS_SCHEMA = {
+  type: 'object', additionalProperties: false,
+  required: [
+    'status', 'cause', 'confidence', 'suspected_paths', 'summary',
+    'failure_signature', 'recommended_fix', 'repair_tier', 'scope_status', 'blocker',
+  ],
+  properties: {
+    status: { type: 'string', enum: ['DIAGNOSED', 'BLOCKED'] },
+    cause: { type: 'string' },
+    confidence: { type: 'string', enum: ['low', 'medium', 'high'] },
+    suspected_paths: { type: 'array', items: { type: 'string' } },
+    summary: { type: 'string' },
+    failure_signature: { type: ['string', 'null'] },
+    recommended_fix: { type: 'string' },
+    repair_tier: { type: 'string', enum: ['routine', 'strong', 'frontier'] },
+    scope_status: { type: 'string', enum: ['IN_SCOPE', 'OUT_OF_SCOPE'] },
+    blocker: { type: ['string', 'null'] },
+  },
+}
+
 function isNative(route) {
   return route === 'claude-haiku' || route === 'claude-sonnet' ||
     route === 'claude-opus' || route === 'claude-best'
@@ -65,9 +110,17 @@ function withNativeEffort(route, options) {
 }
 
 function rolePhase(role) {
-  if (role === 'verifier' || role === 'final-gate') return role === 'final-gate' ? 'Final gate' : 'Verify'
-  if (role === 'frontier-replanner' || role === 'repair') return 'Escalate'
+  if (role === 'verifier' || role === 'test-intent-verifier' || role === 'final-gate') {
+    return role === 'final-gate' ? 'Final gate' : 'Verify'
+  }
+  if (role === 'frontier-replanner' || role === 'repair' || role === 'diagnostician') return 'Escalate'
   return 'Execute'
+}
+
+function routeCapability(route) {
+  if (['codex-sol', 'codex-high', 'claude-opus', 'claude-best', 'kimi-k3'].includes(route)) return 3
+  if (['corporate-pro', 'codex-terra', 'codex', 'claude-sonnet'].includes(route)) return 2
+  return 1
 }
 
 function statusFromRouter(status) {
@@ -139,6 +192,7 @@ async function runWorker(route, role, task, objective, evidence, attempt) {
     `ACCEPTANCE CHECKS:\n${task.acceptance_checks.join('\n')}`,
     evidence.length ? `FAILURE EVIDENCE FROM EARLIER ATTEMPTS:\n${JSON.stringify(evidence)}` : '',
     'Implement or investigate the bounded task. Inspect the current worktree rather than trusting earlier claims.',
+    'Do not run the planned targeted, affected, or regression commands yourself; deterministic check nodes own them.',
     'Do not modify Git history or publish. Report uncertainty instead of expanding scope.',
     'Return status, concise summary, changed_files, checks actually run, and error.',
   ].filter(Boolean).join('\n\n')
@@ -147,8 +201,52 @@ async function runWorker(route, role, task, objective, evidence, attempt) {
     : runExternalWorker(route, role, task, prompt, label, profile)
 }
 
-async function runExternalVerifier(route, task, workerRoute, workerResult, attempt, finalGate = false) {
-  const role = finalGate ? 'final-gate' : 'verifier'
+async function runDeterministicCheck(taskId, level, check, sequence) {
+  const args = {
+    workflow_id: PLAN.workflow_id,
+    task_id: `${taskId}-${level}-${sequence}`,
+    working_directory: PLAN.working_directory,
+    level,
+    command: check.command,
+    timeout_seconds: check.timeout_seconds || 3600,
+  }
+  if (check.rerun_command) args.rerun_command = check.rerun_command
+  const prompt = [
+    'You are a transparent deterministic check wrapper, not a coding model.',
+    'Do not inspect, edit, diagnose, retry, or summarize the repository yourself.',
+    `Call ${RUN_CHECK_TOOL} EXACTLY ONCE with the JSON below. It is your only action tool.`,
+    'Map the returned fields into the requested schema without changing status.',
+    'FAIL, SUSPECTED_FLAKY, TIMED_OUT, and STALE are all non-green.',
+    '',
+    JSON.stringify(args),
+  ].join('\n')
+  return agent(prompt, {
+    label: `check:${taskId}:${level}:${sequence}`,
+    phase: level === 'regression' ? 'Final gate' : 'Check',
+    schema: CHECK_SCHEMA,
+    model: 'haiku',
+    tools: [RUN_CHECK_TOOL],
+    maxTurns: 4,
+  })
+}
+
+async function runCheckLevel(task, level, sequenceBase = 0) {
+  const checks = task.test_plan?.[level] || []
+  const results = []
+  for (let index = 0; index < checks.length; index += 1) {
+    const result = await runDeterministicCheck(task.id, level, checks[index], sequenceBase + index + 1)
+    results.push(result)
+    if (!result || result.status !== 'PASS') break
+  }
+  return results
+}
+
+function firstNonGreen(checks) {
+  return checks.find((check) => !check || check.status !== 'PASS') || null
+}
+
+async function runExternalVerifier(route, task, workerRoute, workerResult, attempt, finalGate = false, verificationRole = 'verifier') {
+  const role = finalGate ? 'final-gate' : verificationRole
   const taskId = finalGate ? 'final-gate' : task.id
   const verifierPrompt = [
     'You are an independent, read-only verifier. Inspect the CURRENT worktree yourself.',
@@ -158,7 +256,7 @@ async function runExternalVerifier(route, task, workerRoute, workerResult, attem
     `Acceptance checks:\n${task.acceptance_checks.join('\n')}`,
     `Worker route: ${workerRoute}`,
     `Worker report:\n${JSON.stringify(workerResult)}`,
-    'Run the deterministic checks where possible. Do not edit source files.',
+    'Use the supplied deterministic check evidence. Do not rerun tests and do not edit source files.',
     'Return exactly one JSON object with keys: verdict (PASS|FAIL|BLOCKED), summary, findings (string array), checks (string array), failure_packet.',
     'PASS only with evidence. On FAIL, failure_packet must contain the exact error, relevant diff scope, failed approach, and what a stronger worker should change.',
   ].join('\n\n')
@@ -186,8 +284,8 @@ async function runExternalVerifier(route, task, workerRoute, workerResult, attem
   })
 }
 
-async function runNativeVerifier(route, task, workerRoute, workerResult, attempt, finalGate = false) {
-  const role = finalGate ? 'final-gate' : 'verifier'
+async function runNativeVerifier(route, task, workerRoute, workerResult, attempt, finalGate = false, verificationRole = 'verifier') {
+  const role = finalGate ? 'final-gate' : verificationRole
   const taskId = finalGate ? 'final-gate' : task.id
   const prompt = [
     'Act as an independent, read-only verifier. Inspect the CURRENT worktree yourself.',
@@ -198,7 +296,7 @@ async function runNativeVerifier(route, task, workerRoute, workerResult, attempt
     `Acceptance checks:\n${task.acceptance_checks.join('\n')}`,
     `Worker route: ${workerRoute}`,
     `Worker report:\n${JSON.stringify(workerResult)}`,
-    'Run deterministic checks where possible. Do not edit source files or Git history.',
+    'Use the supplied deterministic check evidence. Do not rerun tests or edit source files or Git history.',
     'PASS only with evidence. On FAIL, failure_packet must include exact errors, diff scope, failed approach, and instructions for a stronger worker.',
     `Call ${RECORD_VERDICT_TOOL} after deciding. Call it exactly once with workflow_id=${PLAN.workflow_id}, task_id=${taskId}, route=${route}, the lowercase verdict, and concise evidence. This recorder does not call a model; preserve your verdict if recording fails.`,
   ].join('\n\n')
@@ -207,14 +305,115 @@ async function runNativeVerifier(route, task, workerRoute, workerResult, attempt
     phase: rolePhase(role),
     schema: VERIFIER_SCHEMA,
     model: nativeModel(route),
-    tools: ['Read', 'Glob', 'Grep', 'Bash', RECORD_VERDICT_TOOL],
+    tools: ['Read', 'Glob', 'Grep', RECORD_VERDICT_TOOL],
   }))
 }
 
-async function runVerifier(route, task, workerRoute, workerResult, attempt, finalGate = false) {
+async function runVerifier(route, task, workerRoute, workerResult, attempt, finalGate = false, verificationRole = 'verifier') {
   return isNative(route)
-    ? runNativeVerifier(route, task, workerRoute, workerResult, attempt, finalGate)
-    : runExternalVerifier(route, task, workerRoute, workerResult, attempt, finalGate)
+    ? runNativeVerifier(route, task, workerRoute, workerResult, attempt, finalGate, verificationRole)
+    : runExternalVerifier(route, task, workerRoute, workerResult, attempt, finalGate, verificationRole)
+}
+
+async function runExternalDiagnosis(route, task, failureEvidence, attempt) {
+  const prompt = [
+    'You are a strong read-only root-cause diagnostician. Do not edit files and do not rerun tests.',
+    `Working directory: ${PLAN.working_directory}`,
+    `Objective: ${task.objective}`,
+    `Allowed paths: ${task.allowed_paths.join(', ')}`,
+    `Structured failure evidence:\n${JSON.stringify(failureEvidence)}`,
+    'Inspect only the relevant current code. A pre-existing failure is still an active defect, never permission to ignore it.',
+    'Classify scope as OUT_OF_SCOPE when the required fix needs paths outside the approved allowed_paths.',
+    'Choose repair_tier by the diagnosed repair itself: routine for precise mechanical work, strong for substantial work, frontier for ambiguity or contract/architecture risk.',
+    'Return exactly one JSON object matching: status, cause, confidence, suspected_paths, summary, failure_signature, recommended_fix, repair_tier, scope_status, blocker.',
+  ].join('\n\n')
+  const args = delegationArgs(route, 'diagnostician', task.id, 'review', prompt)
+  const wrapperPrompt = [
+    'You are a transparent one-generation AI Router diagnosis wrapper.',
+    `Call ${DELEGATE_TOOL} EXACTLY ONCE with the JSON below.`,
+    'Do not inspect, edit, retry, or diagnose anything yourself. Map delegated JSON into the requested schema.',
+    'If malformed or unavailable, return status=BLOCKED, confidence=low, scope_status=IN_SCOPE, repair_tier=frontier, and explain the exact issue in blocker.',
+    '',
+    JSON.stringify(args),
+  ].join('\n')
+  return agent(wrapperPrompt, {
+    label: `diagnose:${task.id}:${route}:a${attempt}`,
+    phase: 'Escalate',
+    schema: DIAGNOSIS_SCHEMA,
+    model: 'haiku',
+    tools: [DELEGATE_TOOL],
+    maxTurns: 4,
+  })
+}
+
+async function runNativeDiagnosis(route, task, failureEvidence, attempt) {
+  const prompt = [
+    'Act as a strong read-only root-cause diagnostician. Do not edit files and do not rerun tests.',
+    `Working directory: ${PLAN.working_directory}`,
+    `Objective: ${task.objective}`,
+    `Allowed paths: ${task.allowed_paths.join(', ')}`,
+    `Structured failure evidence:\n${JSON.stringify(failureEvidence)}`,
+    'Inspect only relevant current code. Any observed failure is an active defect even if it predates this workflow.',
+    'Use OUT_OF_SCOPE only when the required fix needs paths outside allowed_paths.',
+    'Choose repair_tier from the diagnosed repair complexity. Return the requested structured diagnosis.',
+  ].join('\n\n')
+  return agent(prompt, withNativeEffort(route, {
+    label: `diagnose:${task.id}:${route}:a${attempt}`,
+    phase: 'Escalate',
+    schema: DIAGNOSIS_SCHEMA,
+    model: nativeModel(route),
+    tools: ['Read', 'Glob', 'Grep'],
+  }))
+}
+
+async function runDiagnosis(task, failureEvidence, attempt) {
+  const results = []
+  const start = Math.min(attempt - 1, task.diagnosis_routes.length - 1)
+  for (let index = start; index < task.diagnosis_routes.length; index += 1) {
+    const route = task.diagnosis_routes[index]
+    const result = isNative(route)
+      ? await runNativeDiagnosis(route, task, failureEvidence, index + 1)
+      : await runExternalDiagnosis(route, task, failureEvidence, index + 1)
+    results.push({ route, result })
+    if (result?.status === 'DIAGNOSED') return { route, result, attempts: results }
+  }
+  return {
+    route: task.diagnosis_routes[task.diagnosis_routes.length - 1],
+    result: results[results.length - 1]?.result || null,
+    attempts: results,
+  }
+}
+
+function changedExistingTests(worker) {
+  return (worker?.changed_files || []).filter((path) =>
+    /(^|\/)(tests?|specs?)(\/|$)|(?:^|[._-])(?:test|spec)\.[^/]+$/i.test(path)
+  )
+}
+
+async function runTestIntentVerifier(task, workerRoute, worker, checkEvidence, attempt) {
+  const changedTests = changedExistingTests(worker)
+  if (!changedTests.length) return null
+  const route = task.test_intent_verifier_routes[
+    Math.min(attempt - 1, task.test_intent_verifier_routes.length - 1)
+  ]
+  const intentTask = {
+    ...task,
+    objective: [
+      'Verify that existing test changes preserve intended contract and coverage.',
+      `Changed tests: ${changedTests.join(', ')}`,
+      'Reject deleted or weakened assertions whose only purpose is obtaining green output.',
+    ].join('\n'),
+  }
+  const result = await runVerifier(
+    route,
+    intentTask,
+    workerRoute,
+    { ...worker, checks: checkEvidence },
+    attempt,
+    false,
+    'test-intent-verifier',
+  )
+  return { route, result, changed_tests: changedTests }
 }
 
 async function runExternalReplanner(route, task, evidence, cycle) {
@@ -268,38 +467,140 @@ async function runReplanner(route, task, evidence, cycle) {
     : runExternalReplanner(route, task, evidence, cycle)
 }
 
+async function evaluateWorker(task, workerRoute, worker, attempt) {
+  const targeted = await runCheckLevel(task, 'targeted', attempt * 100)
+  const targetedFailure = firstNonGreen(targeted)
+  if (targetedFailure) {
+    return {
+      passed: false,
+      failure: { stage: 'targeted', check: targetedFailure, checks: targeted, worker },
+    }
+  }
+  const affected = await runCheckLevel(task, 'affected', attempt * 100 + targeted.length)
+  const affectedFailure = firstNonGreen(affected)
+  const checkEvidence = [...targeted, ...affected]
+  if (affectedFailure) {
+    return {
+      passed: false,
+      failure: { stage: 'affected', check: affectedFailure, checks: checkEvidence, worker },
+    }
+  }
+
+  const testIntent = await runTestIntentVerifier(task, workerRoute, worker, checkEvidence, attempt)
+  if (testIntent && testIntent.result?.verdict !== 'PASS') {
+    return {
+      passed: false,
+      failure: { stage: 'test-intent', test_intent: testIntent, checks: checkEvidence, worker },
+    }
+  }
+
+  const verifierRoute = task.verifier_routes[Math.min(attempt - 1, task.verifier_routes.length - 1)]
+  const verifier = await runVerifier(
+    verifierRoute,
+    task,
+    workerRoute,
+    { ...worker, checks: checkEvidence },
+    attempt,
+  )
+  if (!verifier || verifier.verdict !== 'PASS') {
+    return {
+      passed: false,
+      failure: {
+        stage: 'independent-verifier',
+        verifier_route: verifierRoute,
+        verifier: verifier || { verdict: 'FAIL', failure_packet: 'verifier returned no structured result' },
+        checks: checkEvidence,
+        worker,
+      },
+    }
+  }
+  return { passed: true, checks: checkEvidence, verifier, verifier_route: verifierRoute, test_intent: testIntent }
+}
+
+function nextRepairIndex(routes, currentIndex, diagnosis) {
+  const required = diagnosis?.repair_tier === 'frontier' ? 3 : diagnosis?.repair_tier === 'strong' ? 2 : 1
+  for (let index = currentIndex + 1; index < routes.length; index += 1) {
+    if (routeCapability(routes[index]) >= required) return index
+  }
+  return routes.length
+}
+
+async function diagnoseOrScope(task, failure, attempt) {
+  const diagnosis = await runDiagnosis(task, failure, attempt)
+  if (diagnosis.result?.status !== 'DIAGNOSED') {
+    return {
+      terminal: {
+        status: 'BLOCKED',
+        task_id: task.id,
+        blocker: diagnosis.result?.blocker || 'all strong/frontier diagnosticians failed to establish a repair path',
+        diagnosis,
+      },
+      diagnosis,
+    }
+  }
+  if (diagnosis.result.scope_status === 'OUT_OF_SCOPE') {
+    return {
+      terminal: {
+        status: 'AWAITING_SCOPE_APPROVAL',
+        task_id: task.id,
+        blocker: 'the diagnosed repair requires paths outside the approved scope',
+        requested_paths: diagnosis.result.suspected_paths,
+        diagnosis,
+      },
+      diagnosis,
+    }
+  }
+  return { terminal: null, diagnosis }
+}
+
 async function runTask(task) {
   const evidence = []
   let objective = task.objective
   let attempt = 0
+  let routeIndex = 0
 
-  for (let routeIndex = 0; routeIndex < task.routes.length; routeIndex += 1) {
+  while (routeIndex < task.routes.length) {
     attempt += 1
     const workerRoute = task.routes[routeIndex]
     const worker = await runWorker(workerRoute, routeIndex ? 'repair' : 'worker', task, objective, evidence, attempt)
     if (!worker) {
       evidence.push({ route: workerRoute, failure: 'worker returned no structured result' })
+      routeIndex += 1
       continue
     }
     if (worker.status === 'UNAVAILABLE') {
       evidence.push({ route: workerRoute, failure: worker.error || worker.summary || 'route unavailable' })
+      routeIndex += 1
       continue
     }
-    const verifierRoute = task.verifier_routes[Math.min(routeIndex, task.verifier_routes.length - 1)]
-    const verifier = await runVerifier(verifierRoute, task, workerRoute, worker, attempt)
-    if (verifier && verifier.verdict === 'PASS') {
-      return { status: 'VERIFIED', task_id: task.id, worker_route: workerRoute, verifier_route: verifierRoute, worker, verifier, attempts: attempt }
+    const evaluation = worker.status === 'COMPLETED'
+      ? await evaluateWorker(task, workerRoute, worker, attempt)
+      : { passed: false, failure: { stage: 'worker', worker } }
+    if (evaluation.passed) {
+      return {
+        status: 'VERIFIED',
+        task_id: task.id,
+        worker_route: workerRoute,
+        verifier_route: evaluation.verifier_route,
+        worker,
+        verifier: evaluation.verifier,
+        test_intent: evaluation.test_intent,
+        checks: evaluation.checks,
+        attempts: attempt,
+      }
     }
-    evidence.push({
-      route: workerRoute,
-      worker,
-      verifier_route: verifierRoute,
-      verifier: verifier || { verdict: 'FAIL', failure_packet: 'verifier returned no structured result' },
-    })
+    const diagnosed = await diagnoseOrScope(task, evaluation.failure, attempt)
+    evidence.push({ route: workerRoute, worker, failure: evaluation.failure, diagnosis: diagnosed.diagnosis })
+    if (diagnosed.terminal) return { ...diagnosed.terminal, evidence }
+    objective = [
+      task.objective,
+      'Apply this independently diagnosed repair without ignoring any observed failure:',
+      diagnosed.diagnosis.result.recommended_fix,
+    ].join('\n\n')
+    routeIndex = nextRepairIndex(task.routes, routeIndex, diagnosed.diagnosis.result)
   }
 
   const frontierRoute = task.routes[task.routes.length - 1]
-  const frontierVerifier = task.verifier_routes[task.verifier_routes.length - 1]
   const seenApproaches = new Set()
   let cycle = 0
   while (true) {
@@ -319,13 +620,30 @@ async function runTask(task) {
     }
     attempt += 1
     const worker = await runWorker(frontierRoute, 'repair', task, objective, evidence, attempt)
-    const verifier = worker && worker.status !== 'UNAVAILABLE'
-      ? await runVerifier(frontierVerifier, task, frontierRoute, worker, attempt)
-      : null
-    if (verifier && verifier.verdict === 'PASS') {
-      return { status: 'VERIFIED', task_id: task.id, worker_route: frontierRoute, verifier_route: frontierVerifier, worker, verifier, attempts: attempt, frontier_cycles: cycle }
+    if (!worker || worker.status === 'UNAVAILABLE') {
+      evidence.push({ frontier_cycle: cycle, replan, worker })
+      continue
     }
-    evidence.push({ frontier_cycle: cycle, replan, worker, verifier })
+    const evaluation = worker.status === 'COMPLETED'
+      ? await evaluateWorker(task, frontierRoute, worker, attempt)
+      : { passed: false, failure: { stage: 'worker', worker } }
+    if (evaluation.passed) {
+      return {
+        status: 'VERIFIED',
+        task_id: task.id,
+        worker_route: frontierRoute,
+        verifier_route: evaluation.verifier_route,
+        worker,
+        verifier: evaluation.verifier,
+        test_intent: evaluation.test_intent,
+        checks: evaluation.checks,
+        attempts: attempt,
+        frontier_cycles: cycle,
+      }
+    }
+    const diagnosed = await diagnoseOrScope(task, evaluation.failure, attempt)
+    evidence.push({ frontier_cycle: cycle, replan, worker, failure: evaluation.failure, diagnosis: diagnosed.diagnosis })
+    if (diagnosed.terminal) return { ...diagnosed.terminal, evidence }
   }
 }
 
@@ -336,7 +654,12 @@ async function runTaskGraph() {
     for (const [taskId, task] of [...pending.entries()]) {
       const blockedDependency = task.dependencies.find((dependency) => results[dependency] && results[dependency].status !== 'VERIFIED')
       if (blockedDependency) {
-        results[taskId] = { status: 'BLOCKED', task_id: taskId, blocker: `dependency ${blockedDependency} was not verified` }
+        const dependencyStatus = results[blockedDependency].status
+        results[taskId] = {
+          status: dependencyStatus === 'AWAITING_SCOPE_APPROVAL' ? 'AWAITING_SCOPE_APPROVAL' : 'BLOCKED',
+          task_id: taskId,
+          blocker: `dependency ${blockedDependency} was not verified`,
+        }
         pending.delete(taskId)
       }
     }
@@ -366,7 +689,8 @@ async function runFinalGate(taskResults) {
     expected_artifact: 'A fully verified worktree satisfying every approved task',
     dependencies: [],
     non_goals: [
-      'Do not treat pre-existing worktree changes as workflow failures.',
+      'Preserve unrelated pre-workflow source changes unless the diagnosed repair requires an approved scope amendment.',
+      'Never ignore a test failure because it appears pre-existing; provenance is diagnostic evidence only.',
       'Do not require a globally clean worktree unless the plan recorded a clean pre-workflow baseline.',
     ],
     allowed_paths: allAllowedPaths,
@@ -374,37 +698,87 @@ async function runFinalGate(taskResults) {
     acceptance_checks: PLAN.final_gate.acceptance_checks,
     routes: PLAN.final_gate.routes,
     verifier_routes: PLAN.final_gate.verifier_routes,
+    diagnosis_routes: PLAN.final_gate.diagnosis_routes,
+    test_intent_verifier_routes: PLAN.final_gate.verifier_routes.filter((route) => routeCapability(route) >= 2),
+    test_plan: {
+      targeted: [],
+      affected: [],
+      regression: PLAN.final_gate.test_plan.regression,
+    },
   }
   const seenFailurePackets = new Set()
   let cycle = 0
   let verifierAttempt = 0
   while (true) {
     cycle += 1
+    const regression = await runCheckLevel(finalTask, 'regression', cycle * 1000)
+    const regressionFailure = firstNonGreen(regression)
     const gates = []
-    for (const verifierRoute of PLAN.final_gate.verifier_routes) {
-      verifierAttempt += 1
-      const gate = await runVerifier(
-        verifierRoute,
+    let failurePacket = ''
+    if (regressionFailure) {
+      const diagnosed = await diagnoseOrScope(
         finalTask,
-        'combined-workflow',
-        { status: 'COMPLETED', summary: JSON.stringify(taskResults), changed_files: [], checks: [], error: null },
-        verifierAttempt,
-        true,
+        { stage: 'regression', check: regressionFailure, checks: regression },
+        cycle,
       )
-      gates.push({ route: verifierRoute, result: gate })
-      if (gate && gate.verdict === 'PASS') {
-        return { status: 'VERIFIED', gate, gates, cycles: cycle }
+      if (diagnosed.terminal) {
+        return {
+          ...diagnosed.terminal,
+          regression,
+          cycles: cycle,
+        }
       }
+      failurePacket = [
+        'Mandatory regression is not green.',
+        JSON.stringify(regressionFailure),
+        `Diagnosis: ${JSON.stringify(diagnosed.diagnosis)}`,
+      ].join('\n')
+    } else {
+      for (const verifierRoute of PLAN.final_gate.verifier_routes) {
+        verifierAttempt += 1
+        const gate = await runVerifier(
+          verifierRoute,
+          finalTask,
+          'combined-workflow',
+          {
+            status: 'COMPLETED',
+            summary: JSON.stringify(taskResults),
+            changed_files: [],
+            checks: regression,
+            error: null,
+          },
+          verifierAttempt,
+          true,
+        )
+        gates.push({ route: verifierRoute, result: gate })
+        if (gate && gate.verdict === 'PASS') {
+          return { status: 'VERIFIED', regression, gate, gates, cycles: cycle }
+        }
+      }
+      failurePacket = gates
+        .map(({ route, result }) => `${route}:${result?.failure_packet || result?.summary || 'missing final gate result'}`)
+        .join('\n')
+      const diagnosed = await diagnoseOrScope(
+        finalTask,
+        { stage: 'final-verifier', gates, regression },
+        cycle,
+      )
+      if (diagnosed.terminal) {
+        return {
+          ...diagnosed.terminal,
+          regression,
+          gates,
+          cycles: cycle,
+        }
+      }
+      failurePacket += `\nDiagnosis: ${JSON.stringify(diagnosed.diagnosis)}`
     }
-
-    const failurePacket = gates
-      .map(({ route, result }) => `${route}:${result?.failure_packet || result?.summary || 'missing final gate result'}`)
-      .join('\n')
     const failureFingerprint = failurePacket.toLowerCase().replace(/\s+/g, ' ').trim()
     if (seenFailurePackets.has(failureFingerprint)) {
       return {
         status: 'BLOCKED',
         blocker: 'the complete final-gate verifier ladder repeated the same failure after a verified repair',
+        regression,
         gates,
         cycles: cycle,
       }
@@ -414,7 +788,8 @@ async function runFinalGate(taskResults) {
     if (!buildTasks.length) {
       return {
         status: 'BLOCKED',
-        blocker: 'read-only workflow failed the complete final-gate verifier ladder; automatic repair is forbidden',
+        blocker: 'read-only workflow is not fully green; automatic repair is forbidden',
+        regression,
         gates,
         cycles: cycle,
       }
@@ -447,7 +822,10 @@ phase('Execute')
 const taskResults = await runTaskGraph()
 const blockedTasks = Object.values(taskResults).filter((result) => result.status !== 'VERIFIED')
 if (blockedTasks.length) {
-  return { status: 'BLOCKED', workflow_id: PLAN.workflow_id, tasks: taskResults, blocked: blockedTasks }
+  const status = blockedTasks.some((result) => result.status === 'AWAITING_SCOPE_APPROVAL')
+    ? 'AWAITING_SCOPE_APPROVAL'
+    : 'BLOCKED'
+  return { status, workflow_id: PLAN.workflow_id, tasks: taskResults, blocked: blockedTasks }
 }
 
 phase('Final gate')

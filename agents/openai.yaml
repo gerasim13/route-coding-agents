@@ -1,4 +1,4 @@
 interface:
   display_name: "Route Coding Agents"
-  short_description: "Run visible, verified multi-model coding workflows"
-  default_prompt: "Use $route-coding-agents to plan visible workers and verifiers, route by complexity and cost, and escalate failures until the task is verified."
+  short_description: "Run adaptive, zero-tolerance multi-model workflows"
+  default_prompt: "Use $route-coding-agents to inspect cheaply, plan with independent frontier agents, run visible deterministic checks and model workers, diagnose every failure, and finish only when the mandatory regression is green."

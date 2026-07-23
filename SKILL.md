@@ -9,7 +9,13 @@ Use one supervisor to plan a graph of bounded workers and independent verifiers.
 
 ## Prefer the Claude plugin
 
-When running in Claude Code/Desktop with the `ai-router` plugin installed, invoke `/ai-router:workflow <software task>`. The command name deliberately contains Claude's human workflow opt-in keyword, so it can compile the plan into a native Dynamic Workflow where every model call, verifier, repair, and replan is a visible agent. Inspect it through `/workflows`.
+When running in Claude Code/Desktop with the `ai-router` plugin installed,
+invoke `/ai-router:start <rough software goal>`. It performs adaptive discovery,
+material clarification, and independent frontier planning before compiling one
+native Dynamic Workflow where every model call, deterministic check,
+diagnostician, verifier, repair, and replan is visible. Inspect it through
+`/workflows`. Use `/ai-router:workflow <precise software task>` only as the
+non-interactive expert fast path.
 
 Outside Claude, reproduce the same task graph with the harness's native subagents/tasks. Do not claim Claude's workflow UI in Codex, OpenCode, or Warp.
 
@@ -25,6 +31,8 @@ Outside Claude, reproduce the same task graph with the harness's native subagent
 - Do not let workers commit, push, merge, rebase, reset, clean, stash, or publish.
 - Require explicit approval and a dollar cap for premium routes.
 - Make every generation a separate visible agent/task. Never hide retries inside a script or MCP call.
+- Treat every observed failure as active work. “Pre-existing” is provenance, not permission to ignore it.
+- Require the complete mandatory regression suite to be green before success.
 
 ## Plan before routing
 
@@ -35,6 +43,8 @@ For each bounded task, show:
 - initial worker route and progressively stronger escalation routes;
 - an independent verifier route for every worker level;
 - deterministic acceptance checks;
+- targeted, affected, and complete regression commands;
+- strong-to-frontier diagnosis and independent test-intent routes;
 - approved fallbacks and API budget.
 
 Choose the initial level by task complexity. Do not force every task through the cheapest model.
@@ -56,15 +66,21 @@ Treat model family and reasoning effort as separate choices. Use `claude-haiku`,
 After every worker generation:
 
 1. Inspect the current diff and allowed scope.
-2. Run the strongest deterministic oracle available.
-3. Use an independent verifier at least as capable as the worker.
-4. On failure, create a compact packet with the exact error, diff scope, failed approach, and new evidence.
-5. Give the task to the next stronger model. Never return a confirmed failure to the same weak model.
-6. If the frontier worker fails, run a separate frontier replanner, then a new frontier worker with a materially different approach.
-7. Continue while new evidence or approaches exist. Pause only for a real external blocker, a required user decision, unavailable providers, or new premium authorization.
-8. After verification passes, reset escalation for the next task and route it independently.
+2. Run targeted and affected commands through the deterministic check runner.
+3. On any failure, run one isolated rerun and send the compact redacted evidence to a strong read-only diagnostician.
+4. Use an independent verifier at least as capable as the worker.
+5. If an existing test changed, require a separate independent test-intent verifier.
+6. Give failed work to the next evidence-appropriate stronger model. Never return a confirmed failure to the same weak model.
+7. If the frontier worker fails, run a separate frontier replanner, then a new frontier worker with a materially different approach.
+8. Continue while new evidence or approaches exist. Pause only for a real external blocker, a required user decision, unavailable providers, new scope, or premium authorization.
+9. After verification passes, reset escalation for the next task and route it independently.
 
-At the final gate, run the complete verifier ladder before repair. All-review plans remain read-only and return a blocker instead of repairing. Build repairs may touch only paths already approved for build tasks.
+At the final gate, run the complete mandatory regression suite before the
+verifier ladder. Flaky, timeout, crash, infrastructure, stale, and pre-existing
+failures are all non-green. All-review plans remain read-only and return a
+blocker instead of repairing. Build repairs may touch only paths already
+approved for build tasks; otherwise request a scope amendment and a new
+workflow card.
 
 ## Use the bundled runner outside native workflows
 

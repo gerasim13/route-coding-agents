@@ -24,10 +24,19 @@ SPEC.loader.exec_module(router_core)
 
 def valid_plan(working_directory: str) -> dict:
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "workflow_id": "test-workflow",
         "objective": "Implement and verify a bounded change",
         "working_directory": working_directory,
+        "planning": {
+            "mode": "adaptive",
+            "session_id": "0123456789abcdef0123456789abcdef",
+            "discovery_performed": True,
+            "planner_route": "codex-sol",
+            "critic_route": "claude-opus",
+            "critic_verdict": "PASS",
+            "assumptions": [],
+        },
         "approval": {
             "premium_routes": [],
             "max_api_budget_usd": None,
@@ -46,12 +55,22 @@ def valid_plan(working_directory: str) -> dict:
                 "acceptance_checks": ["python3 -m unittest"],
                 "routes": ["minimax", "corporate-pro", "codex-sol"],
                 "verifier_routes": ["codex-luna", "claude-sonnet", "claude-best"],
+                "diagnosis_routes": ["corporate-pro", "codex-sol"],
+                "test_intent_verifier_routes": ["codex-terra", "claude-opus"],
+                "test_plan": {
+                    "targeted": [{"command": "python3 -m unittest tests.test_unit"}],
+                    "affected": [{"command": "python3 -m unittest", "rerun_command": "python3 -m unittest"}],
+                },
             }
         ],
         "final_gate": {
             "routes": ["corporate-pro", "codex-sol", "claude-best"],
             "verifier_routes": ["codex-terra", "claude-opus", "codex-sol"],
+            "diagnosis_routes": ["corporate-pro", "codex-sol"],
             "acceptance_checks": ["python3 -m unittest"],
+            "test_plan": {
+                "regression": [{"command": "python3 -m unittest", "rerun_command": "python3 -m unittest"}],
+            },
         },
     }
 
@@ -67,6 +86,38 @@ class PlanValidationTests(unittest.TestCase):
     def test_accepts_valid_plan(self) -> None:
         plan = valid_plan(self.directory)
         self.assertIs(router_core.validate_plan(plan), plan)
+
+    def test_rejects_non_frontier_or_same_provider_planning_pair(self) -> None:
+        plan = valid_plan(self.directory)
+        plan["planning"]["planner_route"] = "codex-terra"
+        with self.assertRaisesRegex(router_core.PlanValidationError, "frontier"):
+            router_core.validate_plan(plan)
+
+        plan = valid_plan(self.directory)
+        plan["planning"]["critic_route"] = "codex-high"
+        with self.assertRaisesRegex(router_core.PlanValidationError, "independent"):
+            router_core.validate_plan(plan)
+
+    def test_rejects_unapproved_or_unpassed_plan_critique(self) -> None:
+        plan = valid_plan(self.directory)
+        plan["planning"]["critic_verdict"] = "FAIL"
+        with self.assertRaisesRegex(router_core.PlanValidationError, "critic_verdict"):
+            router_core.validate_plan(plan)
+
+    def test_rejects_missing_test_pyramid_or_weak_diagnostician(self) -> None:
+        plan = valid_plan(self.directory)
+        plan["tasks"][0]["test_plan"]["affected"] = []
+        plan["tasks"][0]["diagnosis_routes"] = ["minimax", "codex-sol"]
+        with self.assertRaises(router_core.PlanValidationError) as raised:
+            router_core.validate_plan(plan)
+        self.assertIn("affected", str(raised.exception))
+        self.assertIn("capability 2", str(raised.exception))
+
+    def test_rejects_ignore_preexisting_failure_semantics(self) -> None:
+        plan = valid_plan(self.directory)
+        plan["final_gate"]["acceptance_checks"] = ["Ignore pre-existing test failures"]
+        with self.assertRaisesRegex(router_core.PlanValidationError, "zero-tolerance"):
+            router_core.validate_plan(plan)
 
     def test_rejects_dependency_cycle(self) -> None:
         plan = valid_plan(self.directory)
@@ -168,13 +219,13 @@ class PlanValidationTests(unittest.TestCase):
 
 class DocumentationTests(unittest.TestCase):
     def test_activation_command_is_identical_in_readme_and_skills(self) -> None:
-        exact_command = "/ai-router:workflow <software task>"
+        exact_command = "/ai-router:start <rough software goal>"
         readme = (PLUGIN_ROOT.parents[1] / "README.md").read_text(encoding="utf-8")
         portable_skill = (PLUGIN_ROOT.parents[1] / "SKILL.md").read_text(encoding="utf-8")
-        workflow_skill = (PLUGIN_ROOT / "claude-skills" / "workflow" / "SKILL.md").read_text(encoding="utf-8")
+        start_skill = (PLUGIN_ROOT / "claude-skills" / "start" / "SKILL.md").read_text(encoding="utf-8")
         self.assertIn(exact_command, readme)
         self.assertIn(exact_command, portable_skill)
-        self.assertIn(f'argument-hint: "<software task>"', workflow_skill)
+        self.assertIn(f'argument-hint: "<rough software goal>"', start_skill)
 
 
 class CompileWorkflowTests(unittest.TestCase):
@@ -220,6 +271,85 @@ class CompileWorkflowTests(unittest.TestCase):
             labels = result["labels"]
             self.assertTrue(any("worker:implementation:minimax:a1" in label for label in labels))
             self.assertTrue(any("repair:implementation:corporate-pro:a2" in label for label in labels))
+
+    def test_failed_deterministic_check_gets_strong_diagnosis_then_repair(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            worktree = root / "repo"
+            worktree.mkdir()
+            script = self._compile(root / "state", valid_plan(str(worktree)))
+            completed = subprocess.run(
+                ["node", str(PLUGIN_ROOT / "tests" / "mock_workflow_runtime.mjs"), str(script), "check-fail-once"],
+                text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            result = json.loads(completed.stdout)
+            self.assertEqual(result["result"]["status"], "VERIFIED")
+            labels = result["labels"]
+            self.assertTrue(any(label.startswith("check:implementation:targeted:") for label in labels))
+            self.assertTrue(any(label.startswith("diagnose:implementation:corporate-pro:") for label in labels))
+            self.assertTrue(any(label.startswith("repair:implementation:corporate-pro:") for label in labels))
+
+    def test_suspected_flaky_is_diagnosed_and_never_treated_as_green(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            worktree = root / "repo"
+            worktree.mkdir()
+            script = self._compile(root / "state", valid_plan(str(worktree)))
+            completed = subprocess.run(
+                ["node", str(PLUGIN_ROOT / "tests" / "mock_workflow_runtime.mjs"), str(script), "flaky-then-repair"],
+                text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            result = json.loads(completed.stdout)
+            self.assertEqual(result["result"]["status"], "VERIFIED")
+            self.assertTrue(any(label.startswith("diagnose:implementation:") for label in result["labels"]))
+            self.assertTrue(any(label.startswith("repair:implementation:") for label in result["labels"]))
+
+    def test_existing_test_edit_triggers_independent_test_intent_agent(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            worktree = root / "repo"
+            worktree.mkdir()
+            script = self._compile(root / "state", valid_plan(str(worktree)))
+            completed = subprocess.run(
+                ["node", str(PLUGIN_ROOT / "tests" / "mock_workflow_runtime.mjs"), str(script), "test-intent"],
+                text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            result = json.loads(completed.stdout)
+            self.assertEqual(result["result"]["status"], "VERIFIED")
+            self.assertTrue(any(label.startswith("test-intent-verifier:implementation:") for label in result["labels"]))
+
+    def test_out_of_scope_diagnosis_requests_plan_amendment(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            worktree = root / "repo"
+            worktree.mkdir()
+            script = self._compile(root / "state", valid_plan(str(worktree)))
+            completed = subprocess.run(
+                ["node", str(PLUGIN_ROOT / "tests" / "mock_workflow_runtime.mjs"), str(script), "out-of-scope"],
+                text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            result = json.loads(completed.stdout)
+            self.assertEqual(result["result"]["status"], "AWAITING_SCOPE_APPROVAL")
+            self.assertIn("outside/contract", json.dumps(result["result"]))
+
+    def test_failing_mandatory_regression_can_never_return_verified(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            worktree = root / "repo"
+            worktree.mkdir()
+            script = self._compile(root / "state", valid_plan(str(worktree)))
+            completed = subprocess.run(
+                ["node", str(PLUGIN_ROOT / "tests" / "mock_workflow_runtime.mjs"), str(script), "regression-never-green"],
+                text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            result = json.loads(completed.stdout)
+            self.assertEqual(result["result"]["status"], "BLOCKED")
+            self.assertTrue(any(":regression:" in label for label in result["labels"]))
 
     def test_mock_runtime_runs_ten_independent_workers_concurrently(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -473,7 +603,20 @@ class McpProtocolTests(unittest.TestCase):
         process.stderr.close()
         self.assertEqual(initialized["result"]["serverInfo"]["name"], "ai-router")
         names = {tool["name"] for tool in listed["result"]["tools"]}
-        self.assertTrue({"prepare_plan", "compile_workflow", "delegate", "usage", "health"}.issubset(names))
+        self.assertTrue(
+            {
+                "start_session",
+                "session_status",
+                "checkpoint_session",
+                "inspect_workspace",
+                "run_check",
+                "prepare_plan",
+                "compile_workflow",
+                "delegate",
+                "usage",
+                "health",
+            }.issubset(names)
+        )
 
 
 if __name__ == "__main__":
