@@ -243,9 +243,16 @@ TOOLS = [
                         "final-gate",
                         "discovery",
                         "planner",
+                        "architecture-drafter",
+                        "architecture-griller",
+                        "architecture-arbiter",
                         "plan-griller",
                         "plan-critic",
                         "calibrator",
+                        "log-summarizer",
+                        "failure-triage",
+                        "dependency-mapper",
+                        "test-inventory",
                         "diagnostician",
                         "test-intent-verifier",
                     ],
@@ -387,6 +394,7 @@ def call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
             workflow_id=compiled["workflow_id"],
             script_path=compiled["script_path"],
             script_sha256=compiled["script_sha256"],
+            protocol_version=compiled["protocol_version"],
         )
         return _text_result(compiled)
     if name == "prepare_plan":
@@ -417,6 +425,7 @@ def call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
                 plan_id=compiled["plan_id"],
                 script_path=compiled["script_path"],
                 script_sha256=compiled["script_sha256"],
+                protocol_version=compiled["protocol_version"],
             )
         return _text_result(compiled)
     if name == "delegate":
@@ -437,7 +446,7 @@ def dispatch(request: dict[str, Any]) -> dict[str, Any] | None:
         result = {
             "protocolVersion": request.get("params", {}).get("protocolVersion", "2024-11-05"),
             "capabilities": {"tools": {"listChanged": False}},
-            "serverInfo": {"name": "ai-router", "version": "0.7.10"},
+            "serverInfo": {"name": "ai-router", "version": "0.8.1"},
         }
     elif method == "ping":
         result = {}

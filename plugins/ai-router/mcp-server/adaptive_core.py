@@ -95,6 +95,7 @@ GENERATED_DIRS = {
     "target",
 }
 CONTROLLER_MODE = "workflow-only"
+CONTROLLER_PROTOCOL_VERSION = 8
 CONTROLLER_BLOCKED_TOOLS = {
     "Agent",
     "Bash",
@@ -452,6 +453,18 @@ def _release_workflow_lease(payload: dict[str, Any], root: Path) -> None:
 
 def _session_summary(payload: dict[str, Any], *, resumed: bool) -> dict[str, Any]:
     controller = payload.get("controller") or {}
+    planning = controller.get("planning")
+    execution = controller.get("execution")
+    active_contract = (
+        execution
+        if payload.get("state") in {"READY_FOR_APPROVAL", "EXECUTING"}
+        else planning
+    )
+    active_protocol_version = (
+        active_contract.get("protocol_version")
+        if isinstance(active_contract, dict)
+        else None
+    )
     return {
         "session_id": payload["session_id"],
         "resumed": resumed,
@@ -466,9 +479,15 @@ def _session_summary(payload: dict[str, Any], *, resumed: bool) -> dict[str, Any
         "last_checkpoint": payload["checkpoints"][-1] if payload["checkpoints"] else None,
         "controller": {
             "mode": controller.get("mode"),
-            "planning": controller.get("planning"),
+            "protocol_version": CONTROLLER_PROTOCOL_VERSION,
+            "active_workflow_protocol_version": active_protocol_version,
+            "needs_recompile": (
+                isinstance(active_contract, dict)
+                and active_protocol_version != CONTROLLER_PROTOCOL_VERSION
+            ),
+            "planning": planning,
             "prepared_plan": controller.get("prepared_plan"),
-            "execution": controller.get("execution"),
+            "execution": execution,
         },
         "recovery_directive": _recovery_directive(payload),
     }
@@ -709,6 +728,18 @@ def _recovery_directive(payload: dict[str, Any]) -> str:
         return prefix + "Ask the pending material question, then compile the next registered Planning Workflow."
     if state in PLANNING_STATES:
         planning = controller.get("planning") or {}
+        if (
+            isinstance(planning, dict)
+            and bool(planning)
+            and planning.get("protocol_version") != CONTROLLER_PROTOCOL_VERSION
+        ):
+            return (
+                prefix
+                + "The registered Planning Workflow uses an older AI Router protocol. "
+                "Do not relaunch it. Re-inspect the worktree, compile a replacement "
+                "Planning Workflow in this same session, and launch its registered "
+                "scriptPath. No new user command or session is required."
+            )
         if planning.get("status") in {"launched", "running"}:
             return prefix + "Wait for the registered Planning Workflow and inspect it through /workflows."
         if planning.get("status") == "completed" and planning.get("result_status") == "PLAN_READY":
@@ -716,11 +747,33 @@ def _recovery_directive(payload: dict[str, Any]) -> str:
         return prefix + "Compile and launch a registered Planning Workflow through MCP."
     if state == "READY_FOR_APPROVAL":
         execution = controller.get("execution") or {}
+        if (
+            isinstance(execution, dict)
+            and bool(execution)
+            and execution.get("protocol_version") != CONTROLLER_PROTOCOL_VERSION
+        ):
+            return (
+                prefix
+                + "The compiled Execution Workflow uses an older AI Router protocol. "
+                "Recompile the already prepared plan and launch the replacement "
+                "registered scriptPath in this same session."
+            )
         if execution.get("status") == "compiled":
             return prefix + "Checkpoint EXECUTING and launch the registered execution scriptPath."
         return prefix + "Compile the prepared RoutePlan, then checkpoint EXECUTING."
     if state == "EXECUTING":
         execution = controller.get("execution") or {}
+        if (
+            isinstance(execution, dict)
+            and bool(execution)
+            and execution.get("protocol_version") != CONTROLLER_PROTOCOL_VERSION
+        ):
+            return (
+                prefix
+                + "The registered Execution Workflow uses an older AI Router protocol. "
+                "Do not relaunch the old script. Recompile the bound prepared plan and "
+                "launch the replacement registered scriptPath in this same session."
+            )
         if execution.get("status") in {"launched", "running"}:
             return prefix + "Wait for the registered Execution Workflow and inspect it through /workflows."
         return prefix + "Recompile or resume the registered Execution Workflow; never fall back to direct execution."
@@ -762,6 +815,7 @@ def register_compiled_workflow(
     script_path: str,
     script_sha256: str,
     plan_id: str | None = None,
+    protocol_version: int = CONTROLLER_PROTOCOL_VERSION,
     root: Path | None = None,
 ) -> dict[str, Any]:
     if kind not in {"planning", "execution"}:
@@ -795,6 +849,7 @@ def register_compiled_workflow(
         "compilation_id": compilation_id,
         "workflow_id": workflow_id,
         "plan_id": plan_id,
+        "protocol_version": protocol_version,
         "script_path": str(path),
         "script_sha256": actual_sha256,
         "status": "compiled",

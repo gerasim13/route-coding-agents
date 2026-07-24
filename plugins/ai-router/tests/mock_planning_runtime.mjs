@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 
 const [scriptPath, scenario = 'pass'] = process.argv.slice(2)
-if (!scriptPath) throw new Error('script path is required')
+if (!scriptPath) throw new Error('planning script path is required')
 
 const source = fs.readFileSync(scriptPath, 'utf8').replace('export const meta =', 'const meta =')
 const specMatch = source.match(/const SPEC = (.+)\nconst DELEGATE_TOOL/)
@@ -9,40 +9,89 @@ if (!specMatch) throw new Error('planning spec was not embedded')
 const planningSpec = JSON.parse(specMatch[1])
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor
 const labels = []
+const prompts = []
 const phases = []
 let active = 0
 let maxActive = 0
 let criticCalls = 0
+let architectureCalls = 0
+let macroGrillCalls = 0
+let tacticalCalls = 0
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-async function agent(_prompt, options = {}) {
+function routed(value) {
+  return { ...value, route_status: 'OK', route_error: null }
+}
+
+async function agent(prompt, options = {}) {
   const label = options.label || 'unlabeled'
   labels.push(label)
+  prompts.push({ label, prompt })
   active += 1
   maxActive = Math.max(maxActive, active)
   await delay(8)
   active -= 1
+
   if (label.startsWith('discover:')) {
-    return {
+    return routed({
       summary: 'Bounded discovery complete',
       evidence: ['mock evidence'],
       uncertainties: [],
       material_questions: [],
-    }
+    })
   }
-  if (label.startsWith('planner:')) {
-    const routineCorrection = scenario === 'routine-critic-correction'
-    return {
+  if (label.startsWith('architecture:')) {
+    architectureCalls += 1
+    const routine = planningSpec.initial_planning_tier === 'routine'
+    return routed({
       status: 'DRAFT_READY',
-      risk_level: routineCorrection ? 'routine' : 'frontier',
+      risk_level: routine ? 'routine' : 'strong',
       architecture_envelope: {
         boundaries: ['mock boundary'],
-        invariants: ['mock invariant'],
+        owners: ['mock owner'],
+        data_flow: ['mock flow'],
+        lifecycles: ['mock lifecycle'],
+        contracts: ['mock contract'],
+        feasibility: ['mock proof'],
         milestones: ['mock milestone'],
       },
+      material_questions: [],
+      assumptions: [],
+      blocker: null,
+    })
+  }
+  if (label.startsWith('macro-grill:')) {
+    macroGrillCalls += 1
+    const challenge = scenario === 'macro-correction' && macroGrillCalls === 1
+    const fatal = scenario === 'macro-fatal'
+    return routed({
+      verdict: challenge || fatal ? 'CHALLENGE' : 'PASS',
+      finding_type: fatal
+        ? 'ARCHITECTURE_FATAL'
+        : challenge
+          ? 'ARCHITECTURE_REPAIRABLE'
+          : 'NONE',
+      blocking_findings: fatal
+        ? ['mock fatal ownership contradiction']
+        : challenge
+          ? ['mock repairable lifecycle contradiction']
+          : [],
+      counterexamples: [],
+      invalid_assumptions: [],
+      material_questions: [],
+      recommended_changes: challenge ? ['repair mock lifecycle'] : [],
+    })
+  }
+  if (label.startsWith('tactical-plan:')) {
+    tacticalCalls += 1
+    const routine = planningSpec.initial_planning_tier === 'routine'
+    return routed({
+      status: 'DRAFT_READY',
+      risk_level: routine ? 'routine' : 'strong',
+      execution_objective: 'Implement the bounded immediate wave',
       tasks: [{
         id: 'implementation',
         objective: 'Implement the bounded result',
@@ -51,49 +100,40 @@ async function agent(_prompt, options = {}) {
         non_goals: ['No unrelated work'],
         allowed_paths: ['src', 'tests'],
         permission: 'build',
-        complexity: routineCorrection ? 'routine' : 'frontier',
+        complexity: routine ? 'routine' : 'strong',
         acceptance_checks: ['The bounded behavior works'],
         targeted_commands: ['true'],
         affected_commands: ['true'],
       }],
+      future_milestones: ['Recalibrate before the next milestone'],
       final_acceptance_checks: ['Complete regression is green'],
       regression_commands: ['true'],
       material_questions: [],
       assumptions: [],
       blocker: null,
-    }
+    })
   }
-  if (label.startsWith('grill:')) {
-    return {
-      verdict: 'PASS',
-      blocking_findings: [],
-      counterexamples: [],
-      invalid_assumptions: [],
-      missing_tests: [],
-      scope_rollback_concerns: [],
-      material_questions: [],
-      recommended_changes: [],
-    }
-  }
-  if (label.startsWith('critic:')) {
+  if (label.startsWith('tactical-critic:')) {
     criticCalls += 1
-    if (
-      (scenario === 'critic-question' || scenario === 'routine-critic-correction') &&
+    const challenge =
+      (scenario === 'critic-correction' || scenario === 'routine-critic-correction') &&
       criticCalls === 1
-    ) {
-      return {
-        verdict: 'CHALLENGE',
-        findings: [],
-        material_questions: ['Should the planner correct this calculable check detail?'],
-        summary: 'This is a plan correction, not a user decision',
-      }
-    }
-    return {
-      verdict: 'PASS',
-      findings: [],
+    const compiler = scenario === 'compiler-block'
+    return routed({
+      verdict: challenge || compiler ? 'CHALLENGE' : 'PASS',
+      finding_type: compiler ? 'COMPILER' : challenge ? 'TACTICAL' : 'NONE',
+      findings: compiler
+        ? ['mock compiler cannot represent required checkpoint']
+        : challenge
+          ? ['mock immediate check needs correction']
+          : [],
       material_questions: [],
-      summary: 'Independent critic passed',
-    }
+      summary: compiler
+        ? 'Compiler representation is impossible'
+        : challenge
+          ? 'One tactical correction is required'
+          : 'Independent critic passed',
+    })
   }
   throw new Error(`unexpected planning label: ${label}`)
 }
@@ -111,7 +151,11 @@ const result = await run(agent, parallel, phase)
 process.stdout.write(JSON.stringify({
   result,
   labels,
+  prompts,
   phases,
   max_active: maxActive,
+  architecture_calls: architectureCalls,
+  macro_grill_calls: macroGrillCalls,
+  tactical_calls: tacticalCalls,
   critic_calls: criticCalls,
 }))

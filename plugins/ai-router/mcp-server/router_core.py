@@ -19,6 +19,9 @@ except ImportError:  # pragma: no cover - Windows fallback
     fcntl = None
 
 
+WORKFLOW_PROTOCOL_VERSION = 8
+
+
 @dataclass(frozen=True)
 class Route:
     alias: str
@@ -34,6 +37,16 @@ class Route:
 ROUTES: dict[str, Route] = {
     "cheap": Route("cheap", "opencode", 1, "deepseek"),
     "minimax": Route("minimax", "opencode", 1, "minimax"),
+    "minimax-fast": Route(
+        "minimax-fast", "opencode", 1, "minimax", model="MiniMax-M2.7-highspeed"
+    ),
+    "corporate-flash": Route(
+        "corporate-flash",
+        "opencode",
+        1,
+        "corporate-litellm",
+        model="deepseek/deepseek-v4-flash",
+    ),
     "openrouter-cheap": Route("openrouter-cheap", "opencode", 1, "openrouter"),
     "codex-luna": Route(
         "codex-luna", "codex", 1, "openai-subscription", model="gpt-5.6-luna", effort="low"
@@ -42,6 +55,40 @@ ROUTES: dict[str, Route] = {
         "claude-haiku", "claude", 1, "anthropic-subscription", native=True, model="haiku"
     ),
     "corporate-pro": Route("corporate-pro", "opencode", 2, "corporate-litellm"),
+    "corporate-qwen": Route(
+        "corporate-qwen",
+        "opencode",
+        2,
+        "corporate-litellm",
+        model="cloudru/Qwen3-Coder-Next",
+    ),
+    "corporate-minimax": Route(
+        "corporate-minimax",
+        "opencode",
+        2,
+        "corporate-litellm",
+        model="cloudru/MiniMax-M3",
+    ),
+    "corporate-glm": Route(
+        "corporate-glm",
+        "opencode",
+        2,
+        "corporate-litellm",
+        model="cloudru/GLM-5.1",
+    ),
+    "minimax-m3": Route(
+        "minimax-m3", "opencode", 2, "minimax", model="MiniMax-M3"
+    ),
+    "deepseek-pro": Route(
+        "deepseek-pro", "opencode", 2, "deepseek", model="deepseek-v4-pro"
+    ),
+    "openrouter-deepseek": Route(
+        "openrouter-deepseek",
+        "opencode",
+        2,
+        "openrouter",
+        model="deepseek/deepseek-v4-pro",
+    ),
     "codex-terra": Route(
         "codex-terra", "codex", 2, "openai-subscription", model="gpt-5.6-terra", effort="medium"
     ),
@@ -63,6 +110,13 @@ ROUTES: dict[str, Route] = {
     "claude-best": Route(
         "claude-best", "claude", 3, "anthropic-subscription", native=True, model="best", effort="high"
     ),
+    "openrouter-deepseek-frontier": Route(
+        "openrouter-deepseek-frontier",
+        "opencode",
+        3,
+        "openrouter",
+        model="deepseek/deepseek-v4-pro",
+    ),
     "kimi-k3": Route("kimi-k3", "opencode", 3, "openrouter", premium=True),
 }
 
@@ -75,27 +129,46 @@ ROLES = {
     "final-gate",
     "discovery",
     "planner",
+    "architecture-drafter",
+    "architecture-griller",
+    "architecture-arbiter",
     "plan-griller",
     "plan-critic",
     "calibrator",
+    "log-summarizer",
+    "failure-triage",
+    "dependency-mapper",
+    "test-inventory",
     "diagnostician",
     "test-intent-verifier",
 }
 COMPLEXITY_LEVELS = {"routine": 1, "strong": 2, "frontier": 3}
 DEFAULT_PLANNING_ROUTES = {
     "planners": {
-        "routine": "claude-haiku",
-        "strong": "claude-sonnet",
-        "frontier": "claude-opus",
+        "routine": "minimax-fast",
+        "strong": "corporate-minimax",
+        "frontier": "claude-best",
     },
-    "critics": {
-        "routine": "codex-terra",
-        "strong": "codex-sol",
+    "tactical_planners": {
+        "routine": "openrouter-cheap",
+        "strong": "openrouter-deepseek",
         "frontier": "codex-sol",
     },
-    "strong_griller": "corporate-pro",
-    "frontier_grillers": ["codex-sol", "claude-opus"],
+    "critics": {
+        "routine": "cheap",
+        "strong": "minimax-m3",
+        "frontier": "openrouter-deepseek-frontier",
+    },
+    "strong_griller": "deepseek-pro",
+    "frontier_grillers": ["codex-sol", "openrouter-deepseek-frontier"],
 }
+DEFAULT_DISCOVERY_ROUTES = [
+    "corporate-flash",
+    "minimax-fast",
+    "openrouter-cheap",
+    "cheap",
+    "codex-luna",
+]
 ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 SECRET_PATH_RE = re.compile(r"(^|/)(\.env(?:\..*)?|[^/]*(?:credential|secret)[^/]*)($|/)", re.IGNORECASE)
 GLOBAL_CLEAN_CHECK_RE = re.compile(
@@ -756,6 +829,7 @@ def validate_planning_request(request: Any) -> dict[str, Any]:
     if not isinstance(request, dict):
         raise PlanValidationError(["planning request must be an object"])
     normalized = json.loads(json.dumps(request))
+    normalized["workflow_protocol_version"] = WORKFLOW_PROTOCOL_VERSION
     session_id = normalized.get("session_id")
     if not isinstance(session_id, str) or not re.fullmatch(r"[a-f0-9]{32}", session_id):
         errors.append("session_id must be a 32-character lowercase hex id")
@@ -777,6 +851,21 @@ def validate_planning_request(request: Any) -> dict[str, Any]:
     if not isinstance(tasks, list):
         errors.append("discovery_tasks must be an array")
         tasks = []
+    try:
+        recent_route_usage = {
+            route: int(bucket.get("calls", 0))
+            for route, bucket in UsageStore().aggregate("week").get("by_route", {}).items()
+        }
+    except (OSError, ValueError):
+        recent_route_usage = {}
+    normalized["route_usage"] = recent_route_usage
+    fair_discovery_routes = sorted(
+        DEFAULT_DISCOVERY_ROUTES,
+        key=lambda route: (
+            recent_route_usage.get(route, 0),
+            DEFAULT_DISCOVERY_ROUTES.index(route),
+        ),
+    )
     task_ids: set[str] = set()
     for index, task in enumerate(tasks):
         field = f"discovery_tasks[{index}]"
@@ -792,11 +881,33 @@ def validate_planning_request(request: Any) -> dict[str, Any]:
             task_ids.add(task_id)
         if not isinstance(task.get("objective"), str) or not task["objective"].strip():
             errors.append(f"{field}.objective must be non-empty")
-        route = task.get("route")
-        if route not in ROUTES:
-            errors.append(f"{field}.route is unknown")
-        elif ROUTES[route].premium:
-            errors.append(f"{field}.route cannot use a premium route during automatic discovery")
+        explicit_routes = task.get("routes")
+        legacy_route = task.get("route")
+        if explicit_routes is None:
+            if legacy_route is None:
+                offset = index % len(fair_discovery_routes)
+                explicit_routes = (
+                    fair_discovery_routes[offset:]
+                    + fair_discovery_routes[:offset]
+                )
+            else:
+                explicit_routes = [legacy_route]
+        if (
+            not isinstance(explicit_routes, list)
+            or not explicit_routes
+            or not all(isinstance(route, str) for route in explicit_routes)
+        ):
+            errors.append(f"{field}.routes must be a non-empty route array")
+            explicit_routes = []
+        for route in explicit_routes:
+            if route not in ROUTES:
+                errors.append(f"{field}.routes contains unknown route {route}")
+            elif ROUTES[route].premium:
+                errors.append(
+                    f"{field}.routes cannot use a premium route during automatic discovery"
+                )
+        task["routes"] = list(dict.fromkeys(explicit_routes))
+        task.pop("route", None)
     initial_tier, tier_signals = classify_planning_tier(
         objective if isinstance(objective, str) else "",
         inspection,
@@ -819,6 +930,10 @@ def validate_planning_request(request: Any) -> dict[str, Any]:
             else dict(DEFAULT_PLANNING_ROUTES["planners"])
         ),
     )
+    tactical_planners = routes.setdefault(
+        "tactical_planners",
+        dict(DEFAULT_PLANNING_ROUTES["tactical_planners"]),
+    )
     critics = routes.setdefault(
         "critics",
         (
@@ -832,7 +947,11 @@ def validate_planning_request(request: Any) -> dict[str, Any]:
         "frontier_grillers",
         list(DEFAULT_PLANNING_ROUTES["frontier_grillers"]),
     )
-    for field, mapping in (("planners", planners), ("critics", critics)):
+    for field, mapping in (
+        ("planners", planners),
+        ("tactical_planners", tactical_planners),
+        ("critics", critics),
+    ):
         if not isinstance(mapping, dict):
             errors.append(f"routes.{field} must be an object keyed by planning tier")
             continue
@@ -885,6 +1004,20 @@ def validate_planning_request(request: Any) -> dict[str, Any]:
         or budget <= 0
     ):
         errors.append("planning_budget_usd must be null or positive")
+    normalized.setdefault("planning_timeout_seconds", 1800)
+    planning_timeout = normalized["planning_timeout_seconds"]
+    if (
+        not isinstance(planning_timeout, int)
+        or isinstance(planning_timeout, bool)
+        or not 60 <= planning_timeout <= 1800
+    ):
+        errors.append("planning_timeout_seconds must be between 60 and 1800")
+    normalized["planning_limits"] = {
+        "deadline_seconds": planning_timeout if isinstance(planning_timeout, int) else 1800,
+        "macro_rounds": 2,
+        "tactical_corrections": 1,
+        "provider_failovers_per_node": 2,
+    }
     if errors:
         raise PlanValidationError(errors)
     return normalized
@@ -903,14 +1036,15 @@ def compile_planning_workflow(request: dict[str, Any], template_path: Path) -> d
     workflow_meta = {
         "name": workflow_id,
         "description": (
-            "Visible adaptive-tier architecture, discovery, grill, and RoutePlan "
+            "Visible bounded macro architecture and near-wave RoutePlan "
             f"workflow: {request['objective']}"
         ),
         "phases": [
             {"title": "Discover", "detail": "Run only the bounded read-only discovery that local inspection could not answer"},
-            {"title": "Plan", "detail": "Create the architecture envelope and detailed immediate execution wave"},
-            {"title": "Grill", "detail": "Challenge architecture and the immediate wave without over-planning distant work"},
-            {"title": "Critique", "detail": "Independently verify the complete RoutePlan, routing, checks, and cost"},
+            {"title": "Architecture", "detail": "Prove macro boundaries, owners, lifecycles, contracts, feasibility, migration, and rollback"},
+            {"title": "Architecture grill", "detail": "Try to break the macro architecture without seeing tactical task detail"},
+            {"title": "Near-wave plan", "detail": "Detail only the next one or two executable tasks"},
+            {"title": "Critique", "detail": "Independently verify immediate executability, routing, checks, and cost"},
         ],
     }
     source = template.replace(
@@ -937,6 +1071,7 @@ def compile_planning_workflow(request: dict[str, Any], template_path: Path) -> d
         "script_path": str(script_path),
         "script_sha256": script_sha256,
         "request_digest": _json_digest(request),
+        "protocol_version": WORKFLOW_PROTOCOL_VERSION,
     }
     _atomic_json(
         state_directory() / "planning-compilations" / f"{compilation_id}.json",
@@ -952,6 +1087,7 @@ def compile_planning_workflow(request: dict[str, Any], template_path: Path) -> d
         "initial_planning_tier": request["initial_planning_tier"],
         "tier_signals": request["tier_signals"],
         "planning_routes": request["routes"],
+        "protocol_version": WORKFLOW_PROTOCOL_VERSION,
         "instruction": "Launch the native Workflow tool with scriptPath exactly as returned.",
     }
 
@@ -996,6 +1132,7 @@ def compile_workflow(plan_id: str, template_path: Path) -> dict[str, Any]:
         "phases": [
             {"title": "Execute", "detail": "Run approved task workers; independent tasks may run concurrently"},
             {"title": "Check", "detail": "Run deterministic targeted and affected checks under a worktree lease"},
+            {"title": "Triage", "detail": "Route non-green logs through a visible cheap evidence summarizer before diagnosis"},
             {"title": "Verify", "detail": "Independently inspect every worker and any existing-test changes"},
             {"title": "Calibrate", "detail": "After each dependency wave, compare current evidence with the architecture and replan in scope when drift is confirmed"},
             {"title": "Escalate", "detail": "Diagnose every failure, repair at the evidence-appropriate tier, and replan at frontier"},
@@ -1024,6 +1161,7 @@ def compile_workflow(plan_id: str, template_path: Path) -> dict[str, Any]:
         "script_path": str(script_path),
         "script_sha256": script_sha256,
         "tasks": len(plan["tasks"]),
+        "protocol_version": WORKFLOW_PROTOCOL_VERSION,
         "instruction": "Launch the native Workflow tool with scriptPath exactly as returned.",
     }
 
@@ -1076,6 +1214,8 @@ class UsageStore:
                     fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
         by_route: dict[str, dict[str, Any]] = {}
+        by_role: dict[str, dict[str, Any]] = {}
+        by_provider: dict[str, dict[str, Any]] = {}
         totals = {"input_tokens": 0, "output_tokens": 0, "reasoning_tokens": 0, "cache_read_tokens": 0}
         verdicts = {"pass": 0, "fail": 0, "blocked": 0}
         total_cost = 0.0
@@ -1090,11 +1230,20 @@ class UsageStore:
                 continue
             route = record.get("route", "unknown")
             bucket = by_route.setdefault(route, {"calls": 0, "completed": 0, "failed": 0, "cost_usd": 0.0})
-            bucket["calls"] += 1
-            if record.get("status") == "completed":
-                bucket["completed"] += 1
-            else:
-                bucket["failed"] += 1
+            role_bucket = by_role.setdefault(
+                record.get("role", "unknown"),
+                {"calls": 0, "completed": 0, "failed": 0, "cost_usd": 0.0},
+            )
+            provider_bucket = by_provider.setdefault(
+                record.get("provider", "unknown"),
+                {"calls": 0, "completed": 0, "failed": 0, "cost_usd": 0.0},
+            )
+            for current in (bucket, role_bucket, provider_bucket):
+                current["calls"] += 1
+                if record.get("status") == "completed":
+                    current["completed"] += 1
+                else:
+                    current["failed"] += 1
             usage = record.get("usage") or {}
             for key in totals:
                 value = usage.get(key)
@@ -1103,7 +1252,8 @@ class UsageStore:
             cost = record.get("cost_usd")
             if isinstance(cost, (int, float)) and not isinstance(cost, bool):
                 total_cost += float(cost)
-                bucket["cost_usd"] += float(cost)
+                for current in (bucket, role_bucket, provider_bucket):
+                    current["cost_usd"] += float(cost)
                 known_cost_records += 1
 
         return {
@@ -1115,6 +1265,8 @@ class UsageStore:
             "cost_records": known_cost_records,
             "verdicts": verdicts,
             "by_route": by_route,
+            "by_role": by_role,
+            "by_provider": by_provider,
             "note": "Native Claude workflow tokens are shown by /workflows. Subscription remaining quota is not available through a reliable API.",
         }
 

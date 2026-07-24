@@ -28,7 +28,8 @@ Load:
 
 Call `start_session` immediately with the complete task and absolute current
 working directory. Follow `recovery_directive` when resuming. Call
-`inspect_workspace`.
+`inspect_workspace`. If `controller.needs_recompile` is true, replace the
+stale registered graph in the same session; do not ask the user to start over.
 
 ## Launch the registered planning graph
 
@@ -37,20 +38,21 @@ Call `compile_planning_workflow` with:
 - the session id, exact task, canonical worktree, and inspection result;
 - `discovery_tasks=[]` unless the supplied task lacks a fact required to make
   its scope or oracle executable;
-- omit `routes` so the compiler selects Haiku/Sonnet/Opus and an independent
-  critic from the locally classified planning tier, escalating visibly when
-  the planner discovers greater risk;
+- omit `routes` so the compiler selects independent corporate LiteLLM,
+  MiniMax, direct DeepSeek, OpenRouter, Codex, and Claude roles from the
+  locally classified tier, escalating visibly when evidence requires it;
+- use the default 1800-second planning deadline;
 - no paid planning budget unless already approved.
 
 Pass the complete `inspect_workspace` result directly as `inspection`; never
 nest it under `exact`, `result`, `data`, or another wrapper.
 
 Launch native `Workflow` with the exact returned `scriptPath`. Inline scripts
-are forbidden. The graph performs adaptive-tier planning, risk-gated
-architectural grill, and independent criticism. Routine work skips grill.
-The planning model supplies a compact semantic task draft; the workflow
-deterministically injects provider/model/effort and escalation ladders into
-strict RoutePlan v4.
+are forbidden. The graph first validates a macro architecture without tactical
+task detail, then details only the next one or two tasks and independently
+criticizes them. It is bounded to an initial macro draft plus one repair and
+one tactical correction. The workflow deterministically injects
+provider/model/effort and escalation ladders into strict RoutePlan v4.
 
 If it returns `AWAITING_USER_DECISION`, ask only that material question and
 compile another registered planning graph with the answer in `context`. If it
@@ -65,10 +67,11 @@ Show the prepared plan summary, checkpoint `READY_FOR_APPROVAL`, call
 `Workflow` with the exact returned `scriptPath`. The Workflow approval card is
 the normal execution confirmation.
 
-The compiled graph owns all workers, checks, diagnosticians, repairs,
-verifiers, escalation, calibration, and the final complete regression gate.
-Every generation is a visible node. Never duplicate execution or fallback in
-the main conversation.
+The compiled graph owns all workers, checks, low-cost log summarizers,
+diagnosticians, repairs, verifiers, escalation, calibration, and the final
+complete regression gate. Every generation and provider failover is a visible
+node. Never duplicate execution, log reading, discovery, or fallback in the
+main conversation.
 
 After notification or compact/resume, call `session_status`. Continue only
 through registered workflow scripts until the state is `VERIFIED`,

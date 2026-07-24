@@ -61,11 +61,21 @@ command -v jq >/dev/null 2>&1 || { printf 'UNAVAILABLE jq command_missing\n' >&2
 command -v curl >/dev/null 2>&1 || { printf 'UNAVAILABLE curl command_missing\n' >&2; exit 1; }
 [[ -r "$private_config" ]] || { printf 'UNAVAILABLE private_config unreadable\n' >&2; exit 1; }
 
+model_field=''
+model_literal=''
 case "$model_alias" in
+  corporate-flash) provider='extra_litellm'; model_literal='deepseek/deepseek-v4-flash' ;;
   corporate-pro) provider='extra_litellm'; model_field='smart_model' ;;
+  corporate-qwen) provider='extra_litellm'; model_literal='cloudru/Qwen3-Coder-Next' ;;
+  corporate-minimax) provider='extra_litellm'; model_literal='cloudru/MiniMax-M3' ;;
+  corporate-glm) provider='extra_litellm'; model_literal='cloudru/GLM-5.1' ;;
   minimax) provider='minimax'; model_field='cheap_model' ;;
+  minimax-fast) provider='minimax'; model_field='fast_model' ;;
+  minimax-m3) provider='minimax'; model_literal='MiniMax-M3' ;;
   cheap) provider='deepseek'; model_field='cheap_model' ;;
+  deepseek-pro) provider='deepseek'; model_field='smart_model' ;;
   openrouter-cheap) provider='openrouter'; model_field='cheap_model' ;;
+  openrouter-deepseek|openrouter-deepseek-frontier) provider='openrouter'; model_literal='deepseek/deepseek-v4-pro' ;;
   kimi-k3) provider='openrouter'; model_field='smart_model' ;;
   *) printf 'UNAVAILABLE unknown_alias=%s\n' "$model_alias" >&2; exit 2 ;;
 esac
@@ -73,7 +83,11 @@ esac
 enabled=$(jq -r --arg provider "$provider" '.[$provider].enabled // false' "$private_config")
 api_key=$(jq -r --arg provider "$provider" '.[$provider].api_key // ""' "$private_config")
 base_url=$(jq -r --arg provider "$provider" '.[$provider].base_url // ""' "$private_config")
-model=$(jq -r --arg provider "$provider" --arg field "$model_field" '.[$provider][$field] // ""' "$private_config")
+if [[ -n "$model_literal" ]]; then
+  model="$model_literal"
+else
+  model=$(jq -r --arg provider "$provider" --arg field "$model_field" '.[$provider][$field] // ""' "$private_config")
+fi
 
 [[ "$enabled" == true ]] || { printf 'UNAVAILABLE provider=%s disabled\n' "$provider" >&2; exit 1; }
 [[ -n "$api_key" && "$api_key" != CHANGE_ME && -n "$base_url" && -n "$model" ]] || {

@@ -75,6 +75,17 @@ async function agent(prompt, options = {}) {
       zero_tolerance: true,
     }
   }
+  if (label.startsWith('log-summarizer:')) {
+    return {
+      status: 'SUMMARIZED',
+      summary: 'Compact routed mock failure evidence',
+      failure_signature: 'mock-failure-signature',
+      evidence: ['mock failure from deterministic check'],
+      log_path: '/tmp/mock-check.log',
+      route_status: 'OK',
+      route_error: null,
+    }
+  }
   if (label.startsWith('diagnose:')) {
     const outOfScope = scenario === 'out-of-scope'
     return {

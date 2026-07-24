@@ -12,9 +12,11 @@ Use one supervisor to plan a graph of bounded workers and independent verifiers.
 When running in Claude Code/Desktop with the `ai-router` plugin installed,
 invoke `/ai-router:start-workflow <rough software goal>`. It compiles one
 registered visible Planning Workflow for adaptive discovery, zero-token
-initial risk classification, tier-appropriate planning, material clarification,
-risk-gated adversarial grilling, and independent criticism. A planner that
-finds greater risk escalates through a new visible node. The exact returned
+initial risk classification, a macro architecture proof, an independent
+architecture grill, a one-or-two-task near-wave plan, and independent tactical
+criticism. Planning stops after 30 minutes, one macro repair, or one tactical
+repair instead of endlessly refining distant work. A planner that finds
+greater risk escalates through a new visible node. The exact returned
 RoutePlan is digest-bound to a separately registered Execution Workflow where
 every model call, deterministic check-suite with per-command evidence,
 calibrator, diagnostician, verifier, repair, and replan is visible. Controller
@@ -40,6 +42,9 @@ Outside Claude, reproduce the same task graph with the harness's native subagent
 - Treat every observed failure as active work. “Pre-existing” is provenance, not permission to ignore it.
 - Require the complete mandatory regression suite to be green before success.
 - Skip grill for routine plans; require completed adversarial grill with no open blockers for strong/frontier plans.
+- Validate macro architecture before detailing tasks, and detail only the next one or two tasks.
+- Bound planning to 30 minutes, two macro drafts, one tactical correction, and two visible provider failovers per node.
+- Route discovery, dependency mapping, test inventory, log compression, and failure evidence through visible low-cost agents; the controller must not absorb that work.
 
 ## Plan before routing
 
@@ -59,13 +64,14 @@ Choose the initial level by task complexity. Do not force every task through the
 
 | Level | Routes | Use |
 |---|---|---|
-| Routine | Claude Haiku; Codex Luna/low; MiniMax; direct DeepSeek | Mechanical changes with strong tests |
-| Strong | corporate LiteLLM; Codex Terra/medium; Claude Sonnet/medium | Normal implementation, debugging, multi-file work |
-| Frontier | Codex Sol/high; Claude Opus/high; Claude Best/high | Ambiguity, architecture, repeated failure; Best resolves to Fable when available, otherwise Opus |
+| Routine | MiniMax high-speed; corporate DeepSeek Flash; OpenRouter DeepSeek Flash; direct DeepSeek Flash; Codex Luna/low; Claude Haiku | Discovery, logs, test inventory, mechanical work |
+| Strong | corporate MiniMax M3/Qwen/GLM; direct MiniMax M3/DeepSeek Pro; OpenRouter DeepSeek Pro; Codex Terra/medium; Claude Sonnet | Normal implementation, debugging, multi-file work |
+| Frontier | Codex Sol/high; Claude Opus/high; Claude Best/high; OpenRouter DeepSeek frontier | Ambiguity, architecture, repeated failure; Best resolves to Fable when available and otherwise Opus |
 | Specialist | Kimi K3 | Explicitly approved long-context use |
-| Backup | OpenRouter | Only when an adequate preferred route is unavailable |
 
-When routes are equally adequate, prefer corporate LiteLLM, Codex, or available Claude subscription capacity; then MiniMax; then direct DeepSeek; then OpenRouter.
+OpenRouter is a normal metered pool, not a decorative last resort. Route by
+role and capability first, then prefer the least-used equally adequate route.
+Keep provider-independent verifier pairs and use health-aware visible failover.
 
 Treat model family and reasoning effort as separate choices. Use `claude-haiku`, `claude-sonnet`, and `claude-opus` for explicit native Claude tiers; use `claude-best` only at the hardest frontier step so Claude Code can select Fable when entitled and otherwise fall back to Opus. Use `codex-luna`, `codex-terra`, and `codex-sol` for explicit Codex tiers. The legacy aliases `codex` and `codex-high` remain compatible with Terra/medium and Sol/high respectively. Every task declares `routine`, `strong`, or `frontier`; its initial route must match that level, while both worker and verifier ladders must end at frontier capability.
 
@@ -84,7 +90,7 @@ After every worker generation:
 
 1. Inspect the current diff and allowed scope.
 2. Run targeted and affected commands through the deterministic check runner.
-3. On any failure, run one isolated rerun and send the compact redacted evidence to a strong read-only diagnostician.
+3. On any failure, run one isolated rerun, route raw logs through a visible low-cost evidence summarizer, and send the compact redacted packet to a strong read-only diagnostician.
 4. Use an independent verifier at least as capable as the worker.
 5. If an existing test changed, require a separate independent test-intent verifier.
 6. Give failed work to the next evidence-appropriate stronger model. Never return a confirmed failure to the same weak model.
@@ -98,6 +104,10 @@ failures are all non-green. All-review plans remain read-only and return a
 blocker instead of repairing. Build repairs may touch only paths already
 approved for build tasks; otherwise request a scope amendment and a new
 workflow card.
+
+After every completed dependency wave, calibrate actual evidence against the
+macro architecture and detail only the next one or two tasks. Do not expand
+distant milestones into speculative file-by-file plans.
 
 ## Use the bundled runner outside native workflows
 

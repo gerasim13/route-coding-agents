@@ -137,6 +137,51 @@ class ControllerHookTests(unittest.TestCase):
 
 
 class AdaptiveSessionTests(unittest.TestCase):
+    def test_old_planning_protocol_recompiles_in_same_session(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = root / "repo"
+            repo.mkdir()
+            init_repo(repo)
+            state = root / "state"
+            session = adaptive_core.start_session("upgrade planning", str(repo), state)
+            script = state / "old-planning.js"
+            script.parent.mkdir(parents=True, exist_ok=True)
+            script.write_text("return {}\n", encoding="utf-8")
+
+            adaptive_core.register_compiled_workflow(
+                session["session_id"],
+                "planning",
+                compilation_id="old-planning",
+                workflow_id="old-planning",
+                script_path=str(script),
+                script_sha256=hashlib.sha256(script.read_bytes()).hexdigest(),
+                protocol_version=adaptive_core.CONTROLLER_PROTOCOL_VERSION - 1,
+                root=state,
+            )
+            stale = adaptive_core.session_status(
+                session_id=session["session_id"],
+                root=state,
+            )
+            self.assertTrue(stale["controller"]["needs_recompile"])
+            self.assertIn("older AI Router protocol", stale["recovery_directive"])
+            self.assertIn("same session", stale["recovery_directive"])
+
+            adaptive_core.register_compiled_workflow(
+                session["session_id"],
+                "planning",
+                compilation_id="new-planning",
+                workflow_id="new-planning",
+                script_path=str(script),
+                script_sha256=hashlib.sha256(script.read_bytes()).hexdigest(),
+                root=state,
+            )
+            current = adaptive_core.session_status(
+                session_id=session["session_id"],
+                root=state,
+            )
+            self.assertFalse(current["controller"]["needs_recompile"])
+
     def test_state_root_falls_back_to_claude_plugin_data_for_hooks(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             plugin_data = Path(directory) / "plugin-data"

@@ -19,7 +19,7 @@ usage() {
   printf '%s\n' \
     'Usage: router-run --profile review|verify|build --model ALIAS --dir PATH [--prompt TEXT] [options]' \
     '' \
-    'Model aliases: cheap, minimax, corporate-pro, openrouter-cheap, codex-luna, codex-terra, codex-sol, codex, codex-high, kimi-k3' \
+    'Model aliases: cheap, deepseek-pro, minimax, minimax-fast, minimax-m3, corporate-flash, corporate-pro, corporate-qwen, corporate-minimax, corporate-glm, openrouter-cheap, openrouter-deepseek, openrouter-deepseek-frontier, codex-luna, codex-terra, codex-sol, codex, codex-high, kimi-k3' \
     '' \
     'Options:' \
     '  --worktree-confirmed   Required for build profile' \
@@ -74,9 +74,17 @@ codex_effort=""
 
 case "$model_alias" in
   cheap) provider_model='router_deepseek/deepseek-v4-flash' ;;
+  deepseek-pro) provider_model='router_deepseek/deepseek-v4-pro' ;;
   minimax) provider_model='router_minimax/MiniMax-M2.7' ;;
+  minimax-fast) provider_model='router_minimax/MiniMax-M2.7-highspeed' ;;
+  minimax-m3) provider_model='router_minimax/MiniMax-M3' ;;
+  corporate-flash) provider_model='router_litellm/deepseek/deepseek-v4-flash' ;;
   corporate-pro) provider_model='router_litellm/cloudru/DeepSeek-V4-Pro' ;;
+  corporate-qwen) provider_model='router_litellm/cloudru/Qwen3-Coder-Next' ;;
+  corporate-minimax) provider_model='router_litellm/cloudru/MiniMax-M3' ;;
+  corporate-glm) provider_model='router_litellm/cloudru/GLM-5.1' ;;
   openrouter-cheap) provider_model='router_openrouter/deepseek/deepseek-v4-flash' ;;
+  openrouter-deepseek|openrouter-deepseek-frontier) provider_model='router_openrouter/deepseek/deepseek-v4-pro' ;;
   codex-luna) codex_model='gpt-5.6-luna'; codex_effort='low' ;;
   codex-terra|codex) codex_model='gpt-5.6-terra'; codex_effort='medium' ;;
   codex-sol|codex-high) codex_model='gpt-5.6-sol'; codex_effort='high' ;;

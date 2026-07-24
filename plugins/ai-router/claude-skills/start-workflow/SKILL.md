@@ -31,7 +31,10 @@ current working directory. Then call `session_status`.
 When a session resumes after `/compact`, restart, or an interrupted turn, obey
 `recovery_directive`. Do not reconstruct the protocol from conversation
 memory. A normal continuation needs no additional command: the user may say
-“continue,” and the controller resumes the registered next action.
+“continue,” and the controller resumes the registered next action. If
+`controller.needs_recompile` is true, replace the old registered graph in the
+same session exactly as directed. Never require a new user command or a new
+conversation merely because the plugin protocol changed.
 
 If an unfinished session has a materially different objective, ask whether to
 resume it. If declined, checkpoint the old session `BLOCKED`, start the new
@@ -76,12 +79,12 @@ Create a compact planning request:
   "discovery_tasks": [
     {
       "id": "bounded-read-only-question",
-      "objective": "one repository question local inspection could not answer",
-      "route": "codex-terra"
+      "objective": "one repository question local inspection could not answer"
     }
   ],
   "context": {},
-  "planning_budget_usd": null
+  "planning_budget_usd": null,
+  "planning_timeout_seconds": 1800
 }
 ```
 
@@ -91,24 +94,35 @@ nest it under `exact`, `result`, `data`, or another wrapper.
 Keep deterministic search out of discovery tasks. Use no discovery task when
 paths, contracts, dependencies, tests, and risks are already clear. Otherwise
 create as many independent bounded tasks as the actual unknowns require and
-route routine questions to Luna/Haiku/MiniMax/DeepSeek, cross-file questions to
-Terra/Sonnet/corporate LiteLLM, and unresolved ambiguity to frontier.
+normally omit `routes`: the compiler spreads independent routine evidence work
+across healthy corporate LiteLLM, MiniMax, OpenRouter, direct DeepSeek, and
+Codex Luna routes using recent routed usage. Specify `routes` only when the
+task needs a known capability or provider-independent failover.
 
 The compiler creates one graph containing:
 
 1. parallel bounded discovery;
-2. an adaptive Haiku, Sonnet, or Opus semantic architecture/task planner;
-3. risk-gated architecture grill;
-4. an independent critic at least as capable as the selected risk tier.
+2. a macro architecture draft with no file-level task choreography;
+3. an independent architecture grill that cannot see tactical detail;
+4. a near-wave plan for only the next one or two executable tasks;
+5. an independent tactical critic.
 
-The grill focuses on system boundaries, owners, data flow, invariants,
-contracts, rollback, test oracles, and the immediate dependency wave. It must
-not invent line-level work for distant milestones. A zero-token local
-preclassifier starts routine work on Haiku, substantive work on Sonnet, and
-frontier-risk work on Opus. If a planner discovers higher risk, the graph
-launches a stronger planner as a new visible node. Routine work skips grill;
-strong work uses one strong-or-frontier griller; frontier/high-risk work uses
-at least two frontier providers.
+The architecture stage proves system boundaries, owners, data flow,
+lifecycles, invariants, contracts, migration feasibility, rollback, and test
+oracles before tactical detail can begin. It emits only future milestones for
+later waves. The planning graph has a hard 30-minute deadline, at most two
+macro drafts (initial plus one repair), and at most one tactical correction.
+An architecture-fatal finding stops before tactical planning. Compiler or
+external blockers fail closed instead of provoking another planning loop.
+
+A zero-token local preclassifier selects the starting risk tier. Routine work
+uses low-cost external/native routes; strong work deliberately assigns macro
+drafting, grill, tactical planning, and criticism to independent corporate
+LiteLLM, MiniMax, direct DeepSeek, and OpenRouter roles; frontier work uses
+Claude Best (Fable when available, otherwise Opus), Codex Sol, and an
+independent OpenRouter frontier critic. Provider failure launches a separately
+visible failover node, never a hidden retry. Recent role and route usage
+breaks ties between equally suitable low-cost routes.
 
 The planner returns only semantic architecture, bounded tasks, scope, checks,
 and complexity. The workflow compiler—not the planning model—injects provider
@@ -160,6 +174,8 @@ The compiled graph owns:
 - every implementation, diagnosis, repair, and verification generation;
 - deterministic targeted and affected checks after work;
 - one isolated rerun before strong diagnosis of a failure;
+- one visible low-cost evidence agent that compresses failed test logs before
+  every strong diagnosis;
 - escalation to a stronger route instead of stopping after a weak failure;
 - independent verification of every worker and existing-test change;
 - calibration at dependency boundaries;

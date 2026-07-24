@@ -5,14 +5,17 @@
     "base_url": "https://YOUR_LITELLM_HOST/v1",
     "api_key": "CHANGE_ME",
     "cheap_model": "deepseek/deepseek-v4-flash",
-    "smart_model": "cloudru/DeepSeek-V4-Pro"
+    "smart_model": "cloudru/DeepSeek-V4-Pro",
+    "code_model": "cloudru/Qwen3-Coder-Next",
+    "agent_model": "cloudru/MiniMax-M3"
   },
   "minimax": {
     "enabled": false,
     "base_url": "https://api.minimax.io/v1",
     "api_key": "CHANGE_ME",
     "cheap_model": "MiniMax-M2.7",
-    "fast_model": "MiniMax-M2.7-highspeed"
+    "fast_model": "MiniMax-M2.7-highspeed",
+    "smart_model": "MiniMax-M3"
   },
   "deepseek": {
     "enabled": false,
@@ -26,6 +29,8 @@
     "base_url": "https://openrouter.ai/api/v1",
     "api_key": "CHANGE_ME",
     "cheap_model": "deepseek/deepseek-v4-flash",
+    "code_model": "deepseek/deepseek-v4-flash",
+    "strong_model": "deepseek/deepseek-v4-pro",
     "smart_model": "moonshotai/kimi-k3",
     "smart_model_requires_confirmation": true,
     "smart_model_max_budget_usd": 1.0

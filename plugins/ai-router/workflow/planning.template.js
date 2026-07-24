@@ -3,118 +3,218 @@ export const meta = /*__AI_ROUTER_PLANNING_META__*/ null
 const SPEC = /*__AI_ROUTER_PLANNING_SPEC__*/ null
 const DELEGATE_TOOL = 'mcp__plugin_ai-router_ai-router__delegate'
 const TIER_LEVEL = { routine: 1, strong: 2, frontier: 3 }
+const STARTED_AT = Date.now()
+const DEADLINE_MS = (SPEC.planning_limits?.deadline_seconds || 1800) * 1000
+const MAX_MACRO_ROUNDS = SPEC.planning_limits?.macro_rounds || 2
+const MAX_TACTICAL_CORRECTIONS = SPEC.planning_limits?.tactical_corrections || 1
+const MAX_PROVIDER_ATTEMPTS = (SPEC.planning_limits?.provider_failovers_per_node || 2) + 1
+
+const ROUTE_FIELDS = {
+  route_status: {
+    type: 'string',
+    enum: ['OK', 'UNAVAILABLE', 'TIMED_OUT', 'MALFORMED'],
+  },
+  route_error: { type: ['string', 'null'] },
+}
 
 const DISCOVERY_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['summary', 'evidence', 'uncertainties', 'material_questions'],
+  required: [
+    'summary', 'evidence', 'uncertainties', 'material_questions',
+    'route_status', 'route_error',
+  ],
   properties: {
     summary: { type: 'string' },
     evidence: { type: 'array', items: { type: 'string' } },
     uncertainties: { type: 'array', items: { type: 'string' } },
     material_questions: { type: 'array', items: { type: 'string' } },
+    ...ROUTE_FIELDS,
   },
 }
 
-const NON_EMPTY_STRING = { type: 'string', minLength: 1 }
-const STRING_LIST = { type: 'array', items: NON_EMPTY_STRING }
-const NON_EMPTY_STRING_LIST = { type: 'array', minItems: 1, items: NON_EMPTY_STRING }
-
-const PLANNER_SCHEMA = {
+const ARCHITECTURE_SCHEMA = {
   type: 'object',
   additionalProperties: false,
   required: [
-    'status', 'risk_level', 'architecture_envelope', 'tasks',
-    'final_acceptance_checks', 'regression_commands', 'material_questions',
-    'assumptions', 'blocker',
+    'status', 'risk_level', 'architecture_envelope', 'material_questions',
+    'assumptions', 'blocker', 'route_status', 'route_error',
   ],
   properties: {
-    status: { type: 'string', enum: ['DRAFT_READY', 'AWAITING_USER_DECISION', 'BLOCKED'] },
+    status: {
+      type: 'string',
+      enum: ['DRAFT_READY', 'AWAITING_USER_DECISION', 'BLOCKED'],
+    },
     risk_level: { type: 'string', enum: ['routine', 'strong', 'frontier'] },
     architecture_envelope: { type: 'object' },
-    tasks: {
-      type: 'array',
-      items: {
-        type: 'object',
-        additionalProperties: false,
-        required: [
-          'id', 'objective', 'expected_artifact', 'dependencies', 'non_goals',
-          'allowed_paths', 'permission', 'complexity', 'acceptance_checks',
-          'targeted_commands', 'affected_commands',
-        ],
-        properties: {
-          id: { type: 'string' },
-          objective: { type: 'string' },
-          expected_artifact: { type: 'string' },
-          dependencies: { type: 'array', items: { type: 'string' } },
-          non_goals: { type: 'array', items: { type: 'string' } },
-          allowed_paths: { type: 'array', items: { type: 'string' } },
-          permission: { type: 'string', enum: ['review', 'build'] },
-          complexity: { type: 'string', enum: ['routine', 'strong', 'frontier'] },
-          acceptance_checks: { type: 'array', items: { type: 'string' } },
-          targeted_commands: { type: 'array', items: { type: 'string' } },
-          affected_commands: { type: 'array', items: { type: 'string' } },
-        },
-      },
+    material_questions: { type: 'array', items: { type: 'string' } },
+    assumptions: { type: 'array', items: { type: 'string' } },
+    blocker: { type: ['string', 'null'] },
+    ...ROUTE_FIELDS,
+  },
+}
+
+const TASK_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: [
+    'id', 'objective', 'expected_artifact', 'dependencies', 'non_goals',
+    'allowed_paths', 'permission', 'complexity', 'acceptance_checks',
+    'targeted_commands', 'affected_commands',
+  ],
+  properties: {
+    id: { type: 'string' },
+    objective: { type: 'string' },
+    expected_artifact: { type: 'string' },
+    dependencies: { type: 'array', items: { type: 'string' } },
+    non_goals: { type: 'array', items: { type: 'string' } },
+    allowed_paths: { type: 'array', items: { type: 'string' } },
+    permission: { type: 'string', enum: ['review', 'build'] },
+    complexity: { type: 'string', enum: ['routine', 'strong', 'frontier'] },
+    acceptance_checks: { type: 'array', items: { type: 'string' } },
+    targeted_commands: { type: 'array', items: { type: 'string' } },
+    affected_commands: { type: 'array', items: { type: 'string' } },
+  },
+}
+
+const TACTICAL_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: [
+    'status', 'risk_level', 'execution_objective', 'tasks', 'future_milestones',
+    'final_acceptance_checks', 'regression_commands', 'material_questions',
+    'assumptions', 'blocker', 'route_status', 'route_error',
+  ],
+  properties: {
+    status: {
+      type: 'string',
+      enum: ['DRAFT_READY', 'AWAITING_USER_DECISION', 'BLOCKED'],
     },
+    risk_level: { type: 'string', enum: ['routine', 'strong', 'frontier'] },
+    execution_objective: { type: 'string' },
+    tasks: { type: 'array', minItems: 1, maxItems: 2, items: TASK_SCHEMA },
+    future_milestones: { type: 'array', items: { type: 'string' } },
     final_acceptance_checks: { type: 'array', items: { type: 'string' } },
     regression_commands: { type: 'array', items: { type: 'string' } },
     material_questions: { type: 'array', items: { type: 'string' } },
     assumptions: { type: 'array', items: { type: 'string' } },
     blocker: { type: ['string', 'null'] },
+    ...ROUTE_FIELDS,
   },
 }
 
-const ROUTING_LADDERS = {
-  routine: {
-    routes: ['minimax', 'corporate-pro', 'codex-sol'],
-    verifier_routes: ['codex-luna', 'claude-sonnet', 'claude-opus'],
-    test_intent_verifier_routes: ['codex-terra', 'claude-opus'],
-  },
-  strong: {
-    routes: ['corporate-pro', 'codex-sol'],
-    verifier_routes: ['claude-sonnet', 'claude-opus'],
-    test_intent_verifier_routes: ['codex-terra', 'claude-opus'],
-  },
-  frontier: {
-    routes: ['codex-sol'],
-    verifier_routes: ['claude-opus'],
-    test_intent_verifier_routes: ['claude-opus'],
-  },
-}
-const DIAGNOSIS_ROUTES = ['corporate-pro', 'codex-sol']
-
-const GRILL_SCHEMA = {
+const MACRO_GRILL_SCHEMA = {
   type: 'object',
   additionalProperties: false,
   required: [
-    'verdict', 'blocking_findings', 'counterexamples', 'invalid_assumptions',
-    'missing_tests', 'scope_rollback_concerns', 'material_questions',
-    'recommended_changes',
+    'verdict', 'finding_type', 'blocking_findings', 'counterexamples',
+    'invalid_assumptions', 'material_questions', 'recommended_changes',
+    'route_status', 'route_error',
   ],
   properties: {
     verdict: { type: 'string', enum: ['PASS', 'CHALLENGE'] },
+    finding_type: {
+      type: 'string',
+      enum: [
+        'NONE', 'ARCHITECTURE_FATAL', 'ARCHITECTURE_REPAIRABLE', 'EXTERNAL',
+      ],
+    },
     blocking_findings: { type: 'array', items: { type: 'string' } },
     counterexamples: { type: 'array', items: { type: 'string' } },
     invalid_assumptions: { type: 'array', items: { type: 'string' } },
-    missing_tests: { type: 'array', items: { type: 'string' } },
-    scope_rollback_concerns: { type: 'array', items: { type: 'string' } },
     material_questions: { type: 'array', items: { type: 'string' } },
     recommended_changes: { type: 'array', items: { type: 'string' } },
+    ...ROUTE_FIELDS,
   },
 }
 
 const CRITIC_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['verdict', 'findings', 'material_questions', 'summary'],
+  required: [
+    'verdict', 'finding_type', 'findings', 'material_questions', 'summary',
+    'route_status', 'route_error',
+  ],
   properties: {
     verdict: { type: 'string', enum: ['PASS', 'CHALLENGE'] },
+    finding_type: {
+      type: 'string',
+      enum: ['NONE', 'TACTICAL', 'COMPILER', 'EXTERNAL'],
+    },
     findings: { type: 'array', items: { type: 'string' } },
     material_questions: { type: 'array', items: { type: 'string' } },
     summary: { type: 'string' },
+    ...ROUTE_FIELDS,
   },
 }
+
+const ROUTE_CAPABILITY = {
+  cheap: 1,
+  minimax: 1,
+  'minimax-fast': 1,
+  'corporate-flash': 1,
+  'openrouter-cheap': 1,
+  'openrouter-cheap': 1,
+  'codex-luna': 1,
+  'claude-haiku': 1,
+  'corporate-pro': 2,
+  'corporate-qwen': 2,
+  'corporate-minimax': 2,
+  'corporate-glm': 2,
+  'minimax-m3': 2,
+  'deepseek-pro': 2,
+  'openrouter-deepseek': 2,
+  'codex-terra': 2,
+  codex: 2,
+  'claude-sonnet': 2,
+  'codex-sol': 3,
+  'codex-high': 3,
+  'claude-opus': 3,
+  'claude-best': 3,
+  'openrouter-deepseek-frontier': 3,
+  'kimi-k3': 3,
+}
+
+const ROUTING_LADDERS = {
+  routine: {
+    routes: [
+      'minimax-fast', 'openrouter-cheap', 'cheap',
+      'corporate-qwen', 'codex-terra', 'claude-best',
+    ],
+    verifier_routes: [
+      'openrouter-cheap', 'cheap', 'corporate-qwen',
+      'codex-terra', 'claude-sonnet', 'codex-sol',
+    ],
+    test_intent_verifier_routes: [
+      'openrouter-cheap', 'cheap', 'corporate-qwen',
+      'codex-terra', 'claude-sonnet', 'codex-sol',
+    ],
+  },
+  strong: {
+    routes: [
+      'corporate-minimax', 'minimax-m3', 'deepseek-pro',
+      'codex-terra', 'claude-best',
+    ],
+    verifier_routes: [
+      'deepseek-pro', 'openrouter-deepseek', 'corporate-qwen',
+      'claude-sonnet', 'codex-sol',
+    ],
+    test_intent_verifier_routes: [
+      'deepseek-pro', 'openrouter-deepseek', 'corporate-qwen',
+      'claude-sonnet', 'codex-sol',
+    ],
+  },
+  frontier: {
+    routes: ['claude-best', 'codex-sol', 'openrouter-deepseek-frontier'],
+    verifier_routes: ['codex-sol', 'claude-best', 'claude-opus'],
+    test_intent_verifier_routes: ['codex-sol', 'claude-best', 'claude-opus'],
+  },
+}
+
+const DIAGNOSIS_ROUTES = [
+  'corporate-qwen', 'minimax-m3', 'deepseek-pro',
+  'codex-sol', 'claude-best',
+]
 
 function isNative(route) {
   return route === 'claude-haiku' || route === 'claude-sonnet' ||
@@ -139,6 +239,33 @@ function withNativeEffort(route, options) {
   return effort ? { ...options, effort } : options
 }
 
+function providerGroup(route) {
+  if (route.startsWith('codex')) return 'openai-subscription'
+  if (route.startsWith('claude')) return 'anthropic-subscription'
+  if (route.startsWith('corporate')) return 'corporate-litellm'
+  if (route.startsWith('minimax')) return 'minimax'
+  if (route === 'cheap' || route === 'deepseek-pro') return 'deepseek'
+  return 'openrouter'
+}
+
+function planningExpired() {
+  return Date.now() - STARTED_AT >= DEADLINE_MS
+}
+
+function remainingSeconds(defaultSeconds = 900) {
+  const remaining = Math.max(30, Math.floor((DEADLINE_MS - (Date.now() - STARTED_AT)) / 1000))
+  return Math.min(defaultSeconds, remaining)
+}
+
+function deadlineBlocker(phaseName) {
+  return {
+    status: 'BLOCKED',
+    route_plan: null,
+    material_questions: [],
+    blocker: `PLANNING_DEADLINE_EXCEEDED:${phaseName}:30-minute planning budget exhausted`,
+  }
+}
+
 function delegationArgs(route, role, taskId, prompt) {
   const value = {
     workflow_id: `planning-${SPEC.session_id.slice(0, 8)}`,
@@ -148,7 +275,7 @@ function delegationArgs(route, role, taskId, prompt) {
     profile: 'review',
     working_directory: SPEC.working_directory,
     prompt,
-    timeout_seconds: 900,
+    timeout_seconds: remainingSeconds(),
   }
   if (SPEC.planning_budget_usd != null) value.budget_usd = SPEC.planning_budget_usd
   return value
@@ -160,8 +287,9 @@ async function runExternal(route, role, taskId, prompt, label, phaseName, schema
     'You are a transparent one-generation AI Router planning wrapper.',
     `Call ${DELEGATE_TOOL} EXACTLY ONCE with the JSON arguments below.`,
     'Do not inspect the repository, solve the task, retry, or call another model yourself.',
-    'The delegated model was asked to return one JSON object. Map it faithfully into the requested schema.',
-    'If the delegated result is unavailable or malformed, preserve that fact as a BLOCKED or CHALLENGE result allowed by the schema.',
+    'Map a valid delegated JSON object faithfully into the requested schema.',
+    'Set route_status=OK and route_error=null only for a valid completed delegated result.',
+    'For unavailable, timed-out, or malformed delegated output, preserve the failure using route_status=UNAVAILABLE, TIMED_OUT, or MALFORMED and put the exact compact cause in route_error.',
     '',
     JSON.stringify(args),
   ].join('\n')
@@ -175,21 +303,22 @@ async function runExternal(route, role, taskId, prompt, label, phaseName, schema
   })
 }
 
-async function runNative(route, prompt, label, phaseName, schema) {
+async function runNative(route, prompt, label, phaseName, schema, agentType = 'ai-router:planning-readonly') {
   return agent(
     [
       prompt,
       '',
       `Work read-only in ${SPEC.working_directory}.`,
-      'Never edit files, create worktrees, change Git state, or run the implementation.',
-      'Return exactly the requested structured object.',
+      'Never edit files, create worktrees, change Git state, or run implementation.',
+      'Return exactly the requested structured object with route_status=OK and route_error=null.',
     ].join('\n'),
     withNativeEffort(route, {
       label,
       phase: phaseName,
       schema,
       model: nativeModel(route),
-      agentType: 'ai-router:planning-readonly',
+      agentType,
+      maxTurns: 16,
     }),
   )
 }
@@ -200,89 +329,167 @@ async function runRouted(route, role, taskId, prompt, label, phaseName, schema) 
     : runExternal(route, role, taskId, prompt, label, phaseName, schema)
 }
 
+async function runRoutedPool(routes, role, taskId, prompt, label, phaseName, schema) {
+  let last = null
+  const uniqueRoutes = [...new Set(routes)].slice(0, MAX_PROVIDER_ATTEMPTS)
+  for (let index = 0; index < uniqueRoutes.length; index += 1) {
+    if (planningExpired()) return { route: uniqueRoutes[index], result: null, deadline: true }
+    const route = uniqueRoutes[index]
+    const result = await runRouted(
+      route,
+      role,
+      taskId,
+      prompt,
+      `${label}:${route}:f${index + 1}`,
+      phaseName,
+      schema,
+    )
+    last = { route, result, deadline: false }
+    if (result?.route_status === 'OK') return last
+  }
+  return last || { route: uniqueRoutes[0], result: null, deadline: false }
+}
+
+function seedValue(value) {
+  return [...value].reduce((total, character) => (total + character.charCodeAt(0)) % 65536, 0)
+}
+
+function recentCalls(route) {
+  return Number(SPEC.route_usage?.[route] || 0)
+}
+
+function fairOrder(items, seed, routeForItem = (item) => item) {
+  return [...items].sort((left, right) => {
+    const leftRoute = routeForItem(left)
+    const rightRoute = routeForItem(right)
+    const usageDifference = recentCalls(leftRoute) - recentCalls(rightRoute)
+    if (usageDifference) return usageDifference
+    return seedValue(`${seed}:${leftRoute}`) - seedValue(`${seed}:${rightRoute}`)
+  })
+}
+
+function rotateLadderPairs(ladders, seed) {
+  const rows = ladders.routes.map((route, index) => ({
+    route,
+    verifier: ladders.verifier_routes[index],
+    intent: ladders.test_intent_verifier_routes[index],
+    capability: ROUTE_CAPABILITY[route],
+  }))
+  const result = []
+  for (const capability of [1, 2, 3]) {
+    const group = rows.filter((row) => row.capability === capability)
+    result.push(...fairOrder(
+      group,
+      seed + capability,
+      (row) => row.route,
+    ))
+  }
+  return {
+    routes: result.map((row) => row.route),
+    verifier_routes: result.map((row) => row.verifier),
+    test_intent_verifier_routes: result.map((row) => row.intent),
+  }
+}
+
+function rotateCapabilityGroups(routes, seed) {
+  const result = []
+  for (const capability of [1, 2, 3]) {
+    result.push(...fairOrder(
+      routes.filter((route) => ROUTE_CAPABILITY[route] === capability),
+      seed + capability,
+    ))
+  }
+  return result
+}
+
+function architecturePool(tier) {
+  const primary = SPEC.routes.planners[tier]
+  if (tier === 'routine') {
+    return [primary, 'corporate-flash', 'codex-luna']
+  }
+  if (tier === 'strong') {
+    return [primary, 'minimax-m3', 'deepseek-pro', 'claude-sonnet']
+  }
+  return [primary, 'codex-sol', 'openrouter-deepseek-frontier', 'claude-opus']
+}
+
+function tacticalPool(tier) {
+  const primary = SPEC.routes.tactical_planners[tier]
+  if (tier === 'routine') {
+    return [primary, 'minimax-fast', 'cheap', 'codex-luna']
+  }
+  if (tier === 'strong') {
+    return [primary, 'minimax-m3', 'deepseek-pro', 'codex-terra', 'claude-sonnet']
+  }
+  return [primary, 'openrouter-deepseek-frontier', 'claude-opus']
+}
+
+function criticPool(tier, plannerRoute) {
+  const configured = SPEC.routes.critics[tier]
+  const candidates = tier === 'routine'
+    ? [configured, 'openrouter-cheap', 'codex-luna', 'claude-haiku']
+    : tier === 'strong'
+      ? [configured, 'deepseek-pro', 'corporate-qwen', 'codex-terra', 'claude-sonnet']
+      : [configured, 'claude-opus', 'codex-sol']
+  const independent = candidates.filter(
+    (route) => providerGroup(route) !== providerGroup(plannerRoute),
+  )
+  return independent.length ? independent : candidates
+}
+
+function materialQuestions(results) {
+  return [...new Set(results.flatMap((result) => result?.material_questions || []))]
+}
+
 async function runDiscovery() {
   if (!SPEC.discovery_tasks.length) return []
   const calls = SPEC.discovery_tasks.map((task) => async () => {
     const prompt = [
-      'Perform one bounded read-only discovery task for a software plan.',
-      `Rough goal: ${SPEC.objective}`,
+      'Perform one bounded read-only repository discovery task.',
+      `Goal: ${SPEC.objective}`,
       `Discovery objective: ${task.objective}`,
       `Local inspection: ${JSON.stringify(SPEC.inspection)}`,
-      'Return only repository evidence that changes architecture, scope, tests, routing, or risk.',
-      'Do not write an implementation plan and do not ask for facts available from the repository.',
-      'A material question is only one whose answer changes product behavior, public/persistence contract, architecture, security, cost, scope, or risk.',
+      'Return only evidence that changes architecture, scope, tests, routing, or risk.',
+      'Do not write an implementation plan. Ask only a material product, contract, architecture, security, cost, or scope question unavailable from the repository.',
     ].join('\n\n')
-    return runRouted(
-      task.route,
+    const routed = await runRoutedPool(
+      task.routes,
       'discovery',
       task.id,
       prompt,
-      `discover:${task.id}:${task.route}`,
+      `discover:${task.id}`,
       'Discover',
       DISCOVERY_SCHEMA,
     )
+    return { route: routed.route, ...routed.result }
   })
   return calls.length === 1 ? [await calls[0]()] : parallel(calls)
 }
 
-function plannerContract() {
-  return [
-    'Return a compact semantic planning draft. The workflow deterministically injects provider/model/effort routing and compiles RoutePlan v4; never choose or describe route aliases.',
-    'For each bounded task return id, objective, expected_artifact, dependencies, non_goals, relative allowed_paths, permission, complexity, acceptance_checks, targeted_commands, and affected_commands.',
-    'Return final_acceptance_checks and the complete mandatory regression_commands for the final zero-tolerance gate.',
-    '- zero tolerance for every observed failure, including flaky, timeout, infrastructure, stale, and pre-existing failures.',
-    'Every targeted/affected/regression command is one non-destructive verification or test command that runs after implementation, never a prose test name or a command that creates/edits the requested artifact.',
-    'A build worker performs implementation. Never put implementation commands such as output redirection into targeted_commands, affected_commands, or regression_commands.',
-    'acceptance_checks describe observable outcomes and invariants, not implementation steps.',
-    'Use the minimum dependency graph. Fold deterministic verification into the implementing task checks instead of inventing separate review tasks unless a real dependency boundary requires one.',
-    'affected_commands may be empty when there is no wider affected suite; the compiler then reuses targeted_commands without another planning round.',
-    'allowed_paths are relative to working_directory, never absolute.',
-    'Use safe unique task ids matching letters, digits, dot, underscore, or hyphen. Dependencies must reference task ids in this same draft and must be acyclic.',
-    'All DRAFT_READY arrays required for execution must be non-empty: tasks, each allowed_paths/acceptance_checks/targeted_commands/affected_commands, final_acceptance_checks, and regression_commands.',
-    'The architecture envelope must settle system boundaries, owners, data flow, invariants, approved scope, rollback, and high-level milestones.',
-    'Detail only the immediate dependency wave and, when evidence-stable, the next wave. Keep later milestones at contract level; do not invent line-by-line implementation ten steps ahead.',
-    'The complete task graph must still cover the approved objective, and every future task must begin with recalibration against current repository evidence.',
-  ].join('\n')
-}
-
-function plannerRoute(tier) {
-  return SPEC.routes.planners[tier]
-}
-
-function criticRoute(tier) {
-  return SPEC.routes.critics[tier]
-}
-
-async function runPlanner(discovery, revisionEvidence, round, tier) {
-  const route = plannerRoute(tier)
+async function runArchitecture(discovery, correctionEvidence, round, tier) {
   const prompt = [
-    `Act as the ${tier}-tier planning agent for a visible software-development workflow.`,
-    `Rough goal: ${SPEC.objective}`,
+    `Act as the ${tier}-tier macro architecture drafter.`,
+    `Original goal: ${SPEC.objective}`,
     `Working directory: ${SPEC.working_directory}`,
     `Local inspection: ${JSON.stringify(SPEC.inspection)}`,
-    `Bounded discovery results: ${JSON.stringify(discovery)}`,
+    `Discovery evidence: ${JSON.stringify(discovery)}`,
     `Persisted user/context evidence: ${JSON.stringify(SPEC.context)}`,
-    `The zero-token preclassifier selected ${SPEC.initial_planning_tier}: ${SPEC.tier_signals.join('; ')}`,
-    revisionEvidence.length
-      ? `Bounded correction evidence from earlier rounds: ${JSON.stringify(revisionEvidence)}`
+    correctionEvidence.length
+      ? `One bounded architecture correction is requested from: ${JSON.stringify(correctionEvidence)}`
       : '',
-    plannerContract(),
-    'Classify risk as routine, strong, or frontier from architecture, contracts, migration, concurrency, security, cross-system coupling, rollback, and interacting unknowns.',
-    'Do not raise risk or expand proof obligations merely because an earlier critic found a local command, wording, or coverage defect. Correct that defect at the current tier.',
-    'Do not invent acceptance requirements beyond the user goal and repository evidence. In particular, do not add mtime, ignored-file inventory, internal .git snapshots, or similar proof obligations unless the original goal requires them.',
-    'When a critic flags an unnecessary self-imposed invariant, remove that invariant instead of adding checks for it.',
-    'Keep deterministic checks minimal, executable, and directly traceable to one user requirement or repository contract.',
-    'Ask only material user decisions. Resolve repository facts yourself from the supplied evidence or read-only tools.',
-    'Return status=DRAFT_READY with the compact task draft, or AWAITING_USER_DECISION/BLOCKED with exact evidence.',
+    'Produce only a macro architecture envelope. Settle system boundaries, state owners, data flow, lifecycles, public and persistence contracts, concurrency, dependency direction, feasibility, migration, rollback, fatal risks, and contract-level milestones.',
+    'Do not plan files, signatures, commands, fixtures, or detailed future tasks.',
+    'Prove that the architecture is implementable before optimizing a narrow component.',
+    'Do not ask for repository facts. Ask only a genuinely material user decision.',
   ].filter(Boolean).join('\n\n')
-  return runRouted(
-    route,
-    'planner',
-    `planner-r${round}`,
+  return runRoutedPool(
+    architecturePool(tier),
+    'architecture-drafter',
+    `architecture-r${round}`,
     prompt,
-    `planner:${route}:r${round}`,
-    'Plan',
-    PLANNER_SCHEMA,
+    `architecture:r${round}`,
+    'Architecture',
+    ARCHITECTURE_SCHEMA,
   )
 }
 
@@ -290,95 +497,125 @@ function grillAssignments(riskLevel) {
   if (riskLevel === 'routine') return []
   if (riskLevel === 'strong') {
     return [{
-      route: SPEC.routes.strong_griller,
-      role: 'architecture-contract-breaker',
+      routes: [
+        SPEC.routes.strong_griller,
+        'minimax-m3',
+        'openrouter-deepseek',
+        'claude-sonnet',
+      ],
+      role: 'macro-contract-feasibility-breaker',
     }]
   }
-  const roles = [
-    'assumption-architecture-breaker',
-    'failure-mode-test-scope-breaker',
+  return [
+    {
+      routes: [
+        SPEC.routes.frontier_grillers[0],
+        'claude-opus',
+        'openrouter-deepseek-frontier',
+      ],
+      role: 'ownership-lifecycle-dependency-breaker',
+    },
+    {
+      routes: [
+        SPEC.routes.frontier_grillers[1],
+        'codex-sol',
+        'claude-opus',
+      ],
+      role: 'contract-migration-feasibility-breaker',
+    },
   ]
-  return SPEC.routes.frontier_grillers.map((route, index) => ({
-    route,
-    role: roles[index] || `independent-breaker-${index + 1}`,
-  }))
 }
 
-async function runGrill(draft, routePlan, round) {
-  const assignments = grillAssignments(draft.risk_level)
+async function runMacroGrill(architecture, riskLevel, round) {
+  const assignments = grillAssignments(riskLevel)
   if (!assignments.length) return []
   const calls = assignments.map((assignment, index) => async () => {
     const prompt = [
-      `Act as the ${assignment.role} for an adversarial architecture grill.`,
-      `Goal: ${SPEC.objective}`,
-      `Architecture envelope: ${JSON.stringify(draft.architecture_envelope)}`,
-      `Deterministically compiled RoutePlan: ${JSON.stringify(routePlan)}`,
-      'Try to break architecture, ownership, contracts, sequencing, rollback, scope, test oracles, and the immediate execution wave.',
-      'Your own review harness is intentionally read-only. That is not evidence that the later coding worker or target worktree is read-only.',
-      `Treat the supplied target-workspace inspection as authoritative: ${JSON.stringify(SPEC.inspection)}`,
-      'Do not challenge the plan merely because this reviewer cannot write files, cannot mutate Git, or has a restricted tool profile.',
-      'A planner contradiction, invented requirement, malformed command, or calculable fact is a revision finding, never a user decision.',
-      'A proposed choice between two corrective edits to the plan is a revision finding, not a user decision.',
-      'Ask the user only when the original goal leaves a genuinely material product, contract, architecture, security, cost, or scope choice unresolved.',
-      'Do not perform detailed implementation planning for distant milestones. Challenge them only when their high-level contracts contradict the architecture envelope.',
-      'Do not re-litigate settled choices without new evidence. A repository-answerable uncertainty is not a user question.',
-      'PASS only when no material blocker remains.',
+      `Act as the ${assignment.role} in a macro architecture grill.`,
+      `Original goal: ${SPEC.objective}`,
+      `Repository evidence: ${JSON.stringify({ inspection: SPEC.inspection, context: SPEC.context })}`,
+      `Architecture envelope: ${JSON.stringify(architecture.architecture_envelope)}`,
+      'You intentionally do not receive a tactical RoutePlan.',
+      'Try to prove fatal contradictions in ownership, state lifecycle, data flow, dependency direction, public or persistence contracts, concurrency, migration, rollback, or implementability.',
+      'Do not discuss commands, timeouts, fixtures, file-level scope, implementation signatures, or distant task details.',
+      'Use ARCHITECTURE_FATAL only when no bounded correction can satisfy the approved goal.',
+      'Use ARCHITECTURE_REPAIRABLE for a precise envelope correction. Use EXTERNAL only for a real unavailable decision or dependency.',
+      'PASS only when no macro blocker remains.',
     ].join('\n\n')
-    return runRouted(
-      assignment.route,
-      'plan-griller',
-      `grill-${round}-${index + 1}`,
+    const routed = await runRoutedPool(
+      assignment.routes,
+      'architecture-griller',
+      `macro-grill-${round}-${index + 1}`,
       prompt,
-      `grill:${assignment.role}:${assignment.route}:r${round}`,
-      'Grill',
-      GRILL_SCHEMA,
+      `macro-grill:${assignment.role}:r${round}`,
+      'Architecture grill',
+      MACRO_GRILL_SCHEMA,
     )
+    return { route: routed.route, role: assignment.role, ...routed.result }
   })
   return calls.length === 1 ? [await calls[0]()] : parallel(calls)
 }
 
-async function runCritic(draft, routePlan, grillResults, round) {
-  const route = criticRoute(draft.risk_level)
+function macroBlockers(results) {
+  return results.flatMap((result) => {
+    if (
+      !result ||
+      result.route_status !== 'OK' ||
+      result.verdict !== 'PASS' ||
+      result.material_questions?.length
+    ) {
+      return [
+        ...(result?.blocking_findings || []),
+        ...(result?.invalid_assumptions || []),
+        ...(result?.material_questions || []),
+        ...(result?.route_error ? [result.route_error] : []),
+      ]
+    }
+    return []
+  })
+}
+
+function highestMacroFinding(results) {
+  if (results.some((result) => result?.finding_type === 'ARCHITECTURE_FATAL')) {
+    return 'ARCHITECTURE_FATAL'
+  }
+  if (results.some((result) => result?.finding_type === 'ARCHITECTURE_REPAIRABLE')) {
+    return 'ARCHITECTURE_REPAIRABLE'
+  }
+  if (results.some((result) => result?.finding_type === 'EXTERNAL' || result?.route_status !== 'OK')) {
+    return 'EXTERNAL'
+  }
+  return 'NONE'
+}
+
+async function runTacticalPlanner(architecture, discovery, correctionEvidence, correction, tier) {
   const prompt = [
-    `Act as the independent ${draft.risk_level}-or-stronger critic for the final RoutePlan.`,
-    `Goal: ${SPEC.objective}`,
-    `Architecture envelope: ${JSON.stringify(draft.architecture_envelope)}`,
-    `Observed grill results: ${JSON.stringify(grillResults)}`,
-    `Deterministically compiled RoutePlan: ${JSON.stringify(routePlan)}`,
-    'Your own critic harness is intentionally read-only. That is not evidence that the later coding worker or target worktree is read-only.',
-    `Treat the supplied target-workspace inspection as authoritative: ${JSON.stringify(SPEC.inspection)}`,
-    'Do not challenge the plan merely because this critic cannot write files, mutate Git, create temporary files, or has a restricted tool profile.',
-    'A planner contradiction, invented requirement, malformed command, or calculable fact belongs in findings, not material_questions.',
-    'A proposed choice between two corrective edits to the plan belongs in findings, not material_questions.',
-    'Ask the user only when the original goal leaves a genuinely material product, contract, architecture, security, cost, or scope choice unresolved.',
-    'The RoutePlan is JSON-serialized in this prompt. Judge command strings after JSON decoding; JSON escaping such as \\n does not by itself add a runtime backslash or make a command malformed.',
-    'Require evidence only for the original goal, repository contracts, and material architecture claims needed to execute it. Do not turn optional or gratuitous planner wording into a new acceptance requirement.',
-    'If the plan contains a stronger self-imposed invariant than the user requested, challenge it only when it creates execution risk; recommend removing the gratuitous invariant rather than adding tests for it.',
-    'Do not require mtime proof, ignored-file inventory, or internal .git snapshots unless the original goal explicitly asks for those properties.',
-    'A local check-command or wording defect is a bounded same-tier correction, not evidence that the task itself needs a frontier planner.',
-    'Do not require snapshots of internal .git metadata for an ordinary source/file-scope promise; worker tool policy already forbids Git-history mutation unless the original goal explicitly concerns Git internals.',
-    'Check scope, architecture, dependencies, risk, route/effort selection, provider independence, test pyramid, zero-tolerance acceptance, budget, and rollback.',
-    'Reject detailed speculation about distant implementation when a high-level milestone contract plus mandatory recalibration is sufficient.',
-    'PASS only if the plan is executable as a visible workflow and no material blocker remains.',
-  ].join('\n\n')
-  return runRouted(
-    route,
-    'plan-critic',
-    `critic-r${round}`,
+    `Act as the ${tier}-tier near-wave execution planner.`,
+    `Original goal: ${SPEC.objective}`,
+    `Locked architecture envelope: ${JSON.stringify(architecture.architecture_envelope)}`,
+    `Discovery evidence: ${JSON.stringify(discovery)}`,
+    correctionEvidence.length
+      ? `Apply the single permitted tactical correction: ${JSON.stringify(correctionEvidence)}`
+      : '',
+    'Return exactly one or two evidence-ready tasks for the immediate dependency wave.',
+    'Put all later work in future_milestones as contract-level statements only.',
+    'Do not reopen macro architecture without new repository evidence.',
+    'Return execution_objective as the narrow current objective consistent with the locked architecture and original user goal.',
+    'For each immediate task return id, objective, expected_artifact, dependencies, non_goals, relative allowed_paths, permission, complexity, acceptance_checks, targeted_commands, and affected_commands.',
+    'Every command is one non-destructive post-implementation check. Never place implementation commands in check arrays.',
+    'Return the complete mandatory regression_commands for the final zero-tolerance gate.',
+    'Every observed failure remains active work, including timeout, flaky, infrastructure, stale, and pre-existing failures.',
+    `This is tactical draft ${correction + 1}; there is no planning permission beyond one correction.`,
+  ].filter(Boolean).join('\n\n')
+  return runRoutedPool(
+    tacticalPool(tier),
+    'planner',
+    `tactical-plan-c${correction}`,
     prompt,
-    `critic:${route}:r${round}`,
-    'Critique',
-    CRITIC_SCHEMA,
+    `tactical-plan:c${correction}`,
+    'Near-wave plan',
+    TACTICAL_SCHEMA,
   )
-}
-
-function fingerprint(value) {
-  return JSON.stringify(value).toLowerCase().replace(/\s+/g, ' ').trim()
-}
-
-function nextTier(tier) {
-  if (tier === 'routine') return 'strong'
-  return 'frontier'
 }
 
 function semanticDraftFindings(draft) {
@@ -386,8 +623,8 @@ function semanticDraftFindings(draft) {
   const nonEmptyStrings = (value) =>
     Array.isArray(value) && value.length > 0 &&
     value.every((item) => typeof item === 'string' && item.trim())
-  if (!Array.isArray(draft.tasks) || !draft.tasks.length) {
-    findings.push('DRAFT_READY requires at least one bounded task')
+  if (!Array.isArray(draft.tasks) || !draft.tasks.length || draft.tasks.length > 2) {
+    findings.push('near-wave plan must contain one or two tasks')
     return findings
   }
   const ids = new Set()
@@ -399,22 +636,13 @@ function semanticDraftFindings(draft) {
     } else {
       ids.add(task.id)
     }
-    if (typeof task.objective !== 'string' || !task.objective.trim()) {
-      findings.push(`task ${task.id || '<unknown>'}.objective must be non-empty`)
-    }
-    if (typeof task.expected_artifact !== 'string' || !task.expected_artifact.trim()) {
-      findings.push(`task ${task.id || '<unknown>'}.expected_artifact must be non-empty`)
-    }
     for (const field of ['allowed_paths', 'acceptance_checks', 'targeted_commands']) {
       if (!nonEmptyStrings(task[field])) {
         findings.push(`task ${task.id || '<unknown>'}.${field} must contain non-empty strings`)
       }
     }
-    if (
-      !Array.isArray(task.affected_commands) ||
-      !task.affected_commands.every((item) => typeof item === 'string' && item.trim())
-    ) {
-      findings.push(`task ${task.id || '<unknown>'}.affected_commands must contain only non-empty strings`)
+    if (!Array.isArray(task.affected_commands)) {
+      findings.push(`task ${task.id || '<unknown>'}.affected_commands must be an array`)
     }
     for (const path of task.allowed_paths || []) {
       const normalized = path.replaceAll('\\', '/')
@@ -422,48 +650,18 @@ function semanticDraftFindings(draft) {
         normalized.startsWith('/') || normalized === '..' ||
         normalized.startsWith('../') || normalized.includes('/../')
       ) {
-        findings.push(`task ${task.id || '<unknown>'} path escapes the working directory: ${path}`)
+        findings.push(`task ${task.id || '<unknown>'} path escapes the worktree: ${path}`)
       }
       if (/(^|\/)(?:\.env(?:\.|$)|[^/]*(?:credential|secret)[^/]*)(?:\/|$)/i.test(normalized)) {
         findings.push(`task ${task.id || '<unknown>'} includes a protected path: ${path}`)
       }
     }
-    for (const command of [
-      ...(task.targeted_commands || []),
-      ...(task.affected_commands || []),
-    ]) {
-      if (
-        /\brm\s+-[A-Za-z]*r[A-Za-z]*f\b|\bgit\s+(?:reset|clean|checkout|restore|stash|commit|push|merge|rebase)\b|\b(?:sudo|shutdown|reboot|mkfs)\b/i.test(command)
-      ) {
-        findings.push(`task ${task.id || '<unknown>'} contains a destructive check command: ${command}`)
-      }
-    }
   }
   for (const task of draft.tasks) {
     for (const dependency of task.dependencies || []) {
-      if (dependency === task.id) {
-        findings.push(`task ${task.id} depends on itself`)
-      } else if (!ids.has(dependency)) {
-        findings.push(`task ${task.id} depends on unknown task ${dependency}`)
-      }
+      if (dependency === task.id) findings.push(`task ${task.id} depends on itself`)
+      else if (!ids.has(dependency)) findings.push(`task ${task.id} depends on unknown task ${dependency}`)
     }
-  }
-  const visiting = new Set()
-  const visited = new Set()
-  const taskById = new Map(draft.tasks.map((task) => [task.id, task]))
-  const hasCycle = (taskId) => {
-    if (visiting.has(taskId)) return true
-    if (visited.has(taskId) || !taskById.has(taskId)) return false
-    visiting.add(taskId)
-    for (const dependency of taskById.get(taskId).dependencies || []) {
-      if (hasCycle(dependency)) return true
-    }
-    visiting.delete(taskId)
-    visited.add(taskId)
-    return false
-  }
-  if ([...taskById.keys()].some((taskId) => hasCycle(taskId))) {
-    findings.push('task dependencies contain a cycle')
   }
   if (!nonEmptyStrings(draft.final_acceptance_checks)) {
     findings.push('final_acceptance_checks must contain non-empty strings')
@@ -471,76 +669,75 @@ function semanticDraftFindings(draft) {
   if (!nonEmptyStrings(draft.regression_commands)) {
     findings.push('regression_commands must contain non-empty executable commands')
   }
-  for (const command of draft.regression_commands || []) {
-    if (
-      /\brm\s+-[A-Za-z]*r[A-Za-z]*f\b|\bgit\s+(?:reset|clean|checkout|restore|stash|commit|push|merge|rebase)\b|\b(?:sudo|shutdown|reboot|mkfs)\b/i.test(command)
-    ) {
-      findings.push(`regression_commands contains a destructive check command: ${command}`)
-    }
-  }
   return findings
 }
 
-function materialQuestions(results) {
-  return [...new Set(results.flatMap((result) => result?.material_questions || []))]
-}
-
-function grillBlockers(results) {
-  return results.flatMap((result) => {
-    if (!result || result.verdict !== 'PASS' || result.material_questions?.length) {
-      return [
-        ...(result?.blocking_findings || ['griller returned no valid PASS result']),
-        ...(result?.invalid_assumptions || []),
-        ...(result?.missing_tests || []),
-        ...(result?.scope_rollback_concerns || []),
-        ...(result?.material_questions || []),
-      ]
-    }
-    return []
-  })
+function checkTimeout(command) {
+  if (/^(?:true|false|pwd|rg\b|git\s+(?:diff|status)\b|node\s+--check\b)/.test(command.trim())) {
+    return 600
+  }
+  return 3600
 }
 
 function checkSpecs(commands) {
-  return commands.map((command) => ({ command, timeout_seconds: 300 }))
+  return commands.map((command) => ({
+    command,
+    timeout_seconds: checkTimeout(command),
+  }))
 }
 
-function effectiveRisk(draft) {
+function effectiveRisk(draft, architectureRisk) {
   return draft.tasks.reduce(
     (highest, task) => TIER_LEVEL[task.complexity] > TIER_LEVEL[highest]
       ? task.complexity
       : highest,
-    draft.risk_level,
+    architectureRisk,
   )
 }
 
-function buildRoutePlan(draft, planner, rounds) {
-  const riskLevel = effectiveRisk(draft)
+function buildRoutePlan(
+  draft,
+  architecture,
+  riskLevel,
+  architecturePlannerRoute,
+  criticRoute,
+  grillResults,
+  macroRounds,
+) {
   const assignments = grillAssignments(riskLevel)
   const required = riskLevel !== 'routine'
-  const finalLadders = ROUTING_LADDERS[riskLevel]
+  const finalLadders = rotateLadderPairs(
+    ROUTING_LADDERS[riskLevel],
+    seedValue(`${SPEC.session_id}:final`),
+  )
   return {
     schema_version: 4,
     workflow_id: `workflow-${SPEC.session_id.slice(0, 12)}`,
-    objective: SPEC.objective,
+    objective: draft.execution_objective,
     working_directory: SPEC.working_directory,
     planning: {
       mode: 'adaptive',
+      workflow_protocol_version: SPEC.workflow_protocol_version,
       session_id: SPEC.session_id,
       discovery_performed: SPEC.discovery_tasks.length > 0,
-      planner_route: planner,
-      critic_route: criticRoute(riskLevel),
+      planner_route: architecturePlannerRoute,
+      critic_route: criticRoute,
       critic_verdict: 'PASS',
-      assumptions: draft.assumptions,
-      architecture_envelope: draft.architecture_envelope,
+      assumptions: [...architecture.assumptions, ...draft.assumptions],
+      architecture_envelope: architecture.architecture_envelope,
+      original_objective: SPEC.objective,
+      future_milestones: draft.future_milestones,
+      limits: SPEC.planning_limits,
+      route_usage: SPEC.route_usage || {},
       grill: {
         level: riskLevel,
         required,
         signals: required
-          ? [`${riskLevel} risk selected from architecture, task complexity, and repository evidence`]
+          ? [`${riskLevel} macro architecture risk requires independent feasibility proof`]
           : [],
-        routes: assignments.map((item) => item.route),
-        roles: assignments.map((item) => item.role),
-        rounds: required ? rounds : 0,
+        routes: required ? grillResults.map((result) => result.route) : [],
+        roles: required ? grillResults.map((result) => result.role) : [],
+        rounds: required ? macroRounds : 0,
         open_blockers: [],
         verdict: required ? 'PASS' : 'SKIPPED',
       },
@@ -548,10 +745,11 @@ function buildRoutePlan(draft, planner, rounds) {
     approval: {
       premium_routes: [],
       max_api_budget_usd: null,
-      allow_openrouter_primary: false,
+      allow_openrouter_primary: true,
     },
     tasks: draft.tasks.map((task) => {
-      const ladders = ROUTING_LADDERS[task.complexity]
+      const seed = seedValue(`${SPEC.session_id}:${task.id}`)
+      const ladders = rotateLadderPairs(ROUTING_LADDERS[task.complexity], seed)
       return {
         id: task.id,
         objective: task.objective,
@@ -562,10 +760,10 @@ function buildRoutePlan(draft, planner, rounds) {
         permission: task.permission,
         complexity: task.complexity,
         acceptance_checks: task.acceptance_checks,
-        routes: [...ladders.routes],
-        verifier_routes: [...ladders.verifier_routes],
-        diagnosis_routes: [...DIAGNOSIS_ROUTES],
-        test_intent_verifier_routes: [...ladders.test_intent_verifier_routes],
+        routes: ladders.routes,
+        verifier_routes: ladders.verifier_routes,
+        diagnosis_routes: rotateCapabilityGroups(DIAGNOSIS_ROUTES, seed),
+        test_intent_verifier_routes: ladders.test_intent_verifier_routes,
         test_plan: {
           targeted: checkSpecs(task.targeted_commands),
           affected: checkSpecs(
@@ -577,9 +775,12 @@ function buildRoutePlan(draft, planner, rounds) {
       }
     }),
     final_gate: {
-      routes: [...finalLadders.routes],
-      verifier_routes: [...finalLadders.verifier_routes],
-      diagnosis_routes: [...DIAGNOSIS_ROUTES],
+      routes: finalLadders.routes,
+      verifier_routes: finalLadders.verifier_routes,
+      diagnosis_routes: rotateCapabilityGroups(
+        DIAGNOSIS_ROUTES,
+        seedValue(`${SPEC.session_id}:final-diagnosis`),
+      ),
       acceptance_checks: draft.final_acceptance_checks,
       test_plan: {
         regression: checkSpecs(draft.regression_commands),
@@ -588,36 +789,44 @@ function buildRoutePlan(draft, planner, rounds) {
   }
 }
 
-function applyPlanningEvidence(routePlan, draft, rounds, planner) {
-  const assignments = grillAssignments(draft.risk_level)
-  const required = draft.risk_level !== 'routine'
-  routePlan.planning = {
-    ...routePlan.planning,
-    mode: 'adaptive',
-    session_id: SPEC.session_id,
-    discovery_performed: SPEC.discovery_tasks.length > 0,
-    planner_route: planner,
-    critic_route: criticRoute(draft.risk_level),
-    critic_verdict: 'PASS',
-    assumptions: draft.assumptions,
-    architecture_envelope: draft.architecture_envelope,
-    grill: {
-      level: draft.risk_level,
-      required,
-      signals: required
-        ? [`${draft.risk_level} risk selected by the adaptive planner from architecture and repository evidence`]
-        : [],
-      routes: assignments.map((item) => item.route),
-      roles: assignments.map((item) => item.role),
-      rounds: required ? rounds : 0,
-      open_blockers: [],
-      verdict: required ? 'PASS' : 'SKIPPED',
-    },
-  }
+async function runCritic(draft, architecture, routePlan, tier, architecturePlannerRoute, correction) {
+  const prompt = [
+    `Act as the independent ${tier}-tier tactical critic.`,
+    `Original goal: ${SPEC.objective}`,
+    `Locked architecture envelope: ${JSON.stringify(architecture.architecture_envelope)}`,
+    `Near-wave RoutePlan: ${JSON.stringify(routePlan)}`,
+    'Check only immediate task executability, scope, dependency order, route independence, checks, and consistency with the locked architecture.',
+    'Do not re-litigate macro architecture without new repository evidence.',
+    'Do not demand detailed distant tasks. Future milestones are intentionally contract-level.',
+    'Use COMPILER when the RoutePlan schema or generated policy cannot represent required execution. A COMPILER finding must fail fast and must never trigger another model round.',
+    'Use TACTICAL for one bounded correction. Use EXTERNAL only for a real unavailable user choice or dependency.',
+    `This is critic pass ${correction + 1}; at most one tactical correction is permitted.`,
+    'PASS only when the immediate wave is executable.',
+  ].join('\n\n')
+  return runRoutedPool(
+    criticPool(tier, architecturePlannerRoute),
+    'plan-critic',
+    `tactical-critic-c${correction}`,
+    prompt,
+    `tactical-critic:c${correction}`,
+    'Critique',
+    CRITIC_SCHEMA,
+  )
 }
 
 phase('Discover')
 const discovery = await runDiscovery()
+if (planningExpired()) return deadlineBlocker('discovery')
+const discoveryFailures = discovery.filter((result) => result?.route_status !== 'OK')
+if (discoveryFailures.length) {
+  return {
+    status: 'BLOCKED',
+    route_plan: null,
+    material_questions: [],
+    blocker: `PROVIDER_BLOCKED:discovery:${JSON.stringify(discoveryFailures)}`,
+    discovery,
+  }
+}
 const discoveryQuestions = materialQuestions(discovery)
 if (discoveryQuestions.length) {
   return {
@@ -629,31 +838,177 @@ if (discoveryQuestions.length) {
   }
 }
 
-const seenFindings = new Set()
-const revisionEvidence = []
-const correctionFailuresByTier = { routine: 0, strong: 0, frontier: 0 }
-let round = 1
-let planningTier = SPEC.initial_planning_tier
+let architectureTier = SPEC.initial_planning_tier
+let architecture = null
+let architecturePlannerRoute = null
+let macroRounds = 0
+let macroGrill = []
+const architectureCorrections = []
 
-function tierAfterCorrection(currentTier) {
-  correctionFailuresByTier[currentTier] += 1
-  if (correctionFailuresByTier[currentTier] < 2 || currentTier === 'frontier') {
-    return currentTier
+while (macroRounds < MAX_MACRO_ROUNDS) {
+  if (planningExpired()) return deadlineBlocker('macro-architecture')
+  macroRounds += 1
+  phase('Architecture')
+  const routedArchitecture = await runArchitecture(
+    discovery,
+    architectureCorrections,
+    macroRounds,
+    architectureTier,
+  )
+  architecturePlannerRoute = routedArchitecture.route
+  architecture = routedArchitecture.result
+  if (routedArchitecture.deadline || planningExpired()) {
+    return deadlineBlocker('macro-architecture')
   }
-  return nextTier(currentTier)
-}
-
-while (true) {
-  phase('Plan')
-  const activePlanner = plannerRoute(planningTier)
-  const draft = await runPlanner(discovery, revisionEvidence, round, planningTier)
-  if (!draft || draft.status === 'BLOCKED') {
+  if (!architecture || architecture.route_status !== 'OK') {
     return {
       status: 'BLOCKED',
       route_plan: null,
       material_questions: [],
-      blocker: draft?.blocker || 'adaptive planner returned no valid draft',
+      blocker: `PROVIDER_BLOCKED:architecture:${architecture?.route_error || 'no valid result'}`,
       discovery,
+    }
+  }
+  if (architecture.status === 'BLOCKED') {
+    return {
+      status: 'BLOCKED',
+      route_plan: null,
+      material_questions: [],
+      blocker: architecture.blocker || 'architecture drafter returned BLOCKED',
+      discovery,
+    }
+  }
+  if (architecture.status === 'AWAITING_USER_DECISION' || architecture.material_questions.length) {
+    return {
+      status: 'AWAITING_USER_DECISION',
+      route_plan: null,
+      material_questions: architecture.material_questions,
+      blocker: null,
+      discovery,
+    }
+  }
+  if (TIER_LEVEL[architecture.risk_level] > TIER_LEVEL[architectureTier]) {
+    architectureCorrections.push({
+      type: 'risk-escalation',
+      from: architectureTier,
+      to: architecture.risk_level,
+      reason: 'macro drafter found higher contract or feasibility risk',
+    })
+    architectureTier = architecture.risk_level
+    if (macroRounds >= MAX_MACRO_ROUNDS) {
+      return {
+        status: 'BLOCKED',
+        route_plan: null,
+        material_questions: [],
+        blocker: 'ARCHITECTURE_LIMIT:higher risk was discovered after the final permitted macro draft',
+        discovery,
+      }
+    }
+    continue
+  }
+  architectureTier = TIER_LEVEL[architecture.risk_level] > TIER_LEVEL[architectureTier]
+    ? architecture.risk_level
+    : architectureTier
+
+  phase('Architecture grill')
+  macroGrill = await runMacroGrill(architecture, architectureTier, macroRounds)
+  if (planningExpired()) return deadlineBlocker('macro-grill')
+  const questions = materialQuestions(macroGrill)
+  if (questions.length) {
+    return {
+      status: 'AWAITING_USER_DECISION',
+      route_plan: null,
+      material_questions: questions,
+      blocker: null,
+      discovery,
+      architecture_envelope: architecture.architecture_envelope,
+      macro_grill: macroGrill,
+    }
+  }
+  const blockers = macroBlockers(macroGrill)
+  if (!blockers.length) break
+  const findingType = highestMacroFinding(macroGrill)
+  if (findingType === 'ARCHITECTURE_FATAL') {
+    return {
+      status: 'BLOCKED',
+      route_plan: null,
+      material_questions: [],
+      blocker: `ARCHITECTURE_FATAL:${blockers.join(' | ')}`,
+      discovery,
+      architecture_envelope: architecture.architecture_envelope,
+      macro_grill: macroGrill,
+    }
+  }
+  if (findingType === 'EXTERNAL') {
+    return {
+      status: 'BLOCKED',
+      route_plan: null,
+      material_questions: [],
+      blocker: `PROVIDER_BLOCKED:macro-grill:${blockers.join(' | ')}`,
+      discovery,
+      macro_grill: macroGrill,
+    }
+  }
+  if (macroRounds >= MAX_MACRO_ROUNDS) {
+    return {
+      status: 'BLOCKED',
+      route_plan: null,
+      material_questions: [],
+      blocker: `ARCHITECTURE_LIMIT:one correction exhausted:${blockers.join(' | ')}`,
+      discovery,
+      architecture_envelope: architecture.architecture_envelope,
+      macro_grill: macroGrill,
+    }
+  }
+  architectureCorrections.push({
+    type: 'ARCHITECTURE_REPAIRABLE',
+    findings: blockers,
+    reports: macroGrill,
+  })
+}
+
+if (!architecture) {
+  return {
+    status: 'BLOCKED',
+    route_plan: null,
+    material_questions: [],
+    blocker: 'ARCHITECTURE_LIMIT:no architecture draft completed',
+    discovery,
+  }
+}
+
+let tacticalCorrection = 0
+let tacticalEvidence = []
+while (tacticalCorrection <= MAX_TACTICAL_CORRECTIONS) {
+  if (planningExpired()) return deadlineBlocker('near-wave-plan')
+  phase('Near-wave plan')
+  const routedDraft = await runTacticalPlanner(
+    architecture,
+    discovery,
+    tacticalEvidence,
+    tacticalCorrection,
+    architectureTier,
+  )
+  const draft = routedDraft.result
+  if (routedDraft.deadline || planningExpired()) return deadlineBlocker('near-wave-plan')
+  if (!draft || draft.route_status !== 'OK') {
+    return {
+      status: 'BLOCKED',
+      route_plan: null,
+      material_questions: [],
+      blocker: `PROVIDER_BLOCKED:tactical-plan:${draft?.route_error || 'no valid result'}`,
+      discovery,
+      architecture_envelope: architecture.architecture_envelope,
+    }
+  }
+  if (draft.status === 'BLOCKED') {
+    return {
+      status: 'BLOCKED',
+      route_plan: null,
+      material_questions: [],
+      blocker: draft.blocker || 'near-wave planner returned BLOCKED',
+      discovery,
+      architecture_envelope: architecture.architecture_envelope,
     }
   }
   if (draft.status === 'AWAITING_USER_DECISION' || draft.material_questions.length) {
@@ -663,127 +1018,139 @@ while (true) {
       material_questions: draft.material_questions,
       blocker: null,
       discovery,
+      architecture_envelope: architecture.architecture_envelope,
     }
   }
-  const draftFindings = semanticDraftFindings(draft)
-  if (draftFindings.length) {
-    const draftFingerprint = fingerprint(draftFindings)
-    if (seenFindings.has(draftFingerprint) && planningTier === 'frontier') {
+  const findings = semanticDraftFindings(draft)
+  if (findings.length) {
+    if (tacticalCorrection >= MAX_TACTICAL_CORRECTIONS) {
       return {
         status: 'BLOCKED',
         route_plan: null,
         material_questions: [],
-        blocker: 'frontier planner repeated the same malformed semantic draft',
+        blocker: `BLOCKED_COMPILER:${findings.join(' | ')}`,
         discovery,
+        architecture_envelope: architecture.architecture_envelope,
       }
     }
-    seenFindings.add(draftFingerprint)
-    revisionEvidence.push({
-      source: 'semantic-draft-validation',
-      round,
-      findings: draftFindings,
-    })
-    planningTier = nextTier(planningTier)
-    round += 1
+    tacticalEvidence = [{ finding_type: 'TACTICAL', findings }]
+    tacticalCorrection += 1
     continue
   }
-  const requiredTier = effectiveRisk(draft)
-  if (TIER_LEVEL[requiredTier] > TIER_LEVEL[planningTier]) {
-    revisionEvidence.push({
-      source: 'risk-escalation',
-      round,
-      from: planningTier,
-      to: requiredTier,
-      reason: 'planner found higher architecture or task risk than the current planning tier',
-    })
-    planningTier = requiredTier
-    round += 1
-    continue
-  }
-  draft.risk_level = requiredTier
-  const routePlan = buildRoutePlan(draft, activePlanner, round)
-
-  phase('Grill')
-  const grillResults = await runGrill(draft, routePlan, round)
-  const blockers = grillBlockers(grillResults)
-  if (blockers.length) {
-    const findingFingerprint = fingerprint(blockers)
-    if (seenFindings.has(findingFingerprint)) {
-      if (planningTier === 'frontier') {
-        return {
-          status: 'BLOCKED',
-          route_plan: null,
-          material_questions: [],
-          blocker: 'frontier adversarial grill repeated the same unresolved material findings',
-          discovery,
-          grill: grillResults,
-        }
-      }
-      revisionEvidence.push({
-        source: 'grill-repeat-escalation',
-        round,
-        blockers,
-        reports: grillResults,
-      })
-      planningTier = nextTier(planningTier)
-      round += 1
-      continue
+  const riskLevel = effectiveRisk(draft, architectureTier)
+  if (TIER_LEVEL[riskLevel] > TIER_LEVEL[architectureTier]) {
+    return {
+      status: 'BLOCKED',
+      route_plan: null,
+      material_questions: [],
+      blocker: `ARCHITECTURE_REOPEN_REQUIRED:near-wave task risk ${riskLevel} exceeds locked ${architectureTier} architecture`,
+      discovery,
+      architecture_envelope: architecture.architecture_envelope,
     }
-    seenFindings.add(findingFingerprint)
-    revisionEvidence.push({ source: 'grill', round, blockers, reports: grillResults })
-    planningTier = tierAfterCorrection(planningTier)
-    round += 1
-    continue
   }
-
-  applyPlanningEvidence(routePlan, draft, round, activePlanner)
+  const provisionalCriticRoute = criticPool(
+    riskLevel,
+    architecturePlannerRoute,
+  )[0]
+  const routePlan = buildRoutePlan(
+    draft,
+    architecture,
+    riskLevel,
+    architecturePlannerRoute,
+    provisionalCriticRoute,
+    macroGrill,
+    macroRounds,
+  )
   phase('Critique')
-  const critic = await runCritic(draft, routePlan, grillResults, round)
-  if (critic?.verdict === 'PASS' && !critic?.material_questions?.length) {
+  const routedCritic = await runCritic(
+    draft,
+    architecture,
+    routePlan,
+    riskLevel,
+    architecturePlannerRoute,
+    tacticalCorrection,
+  )
+  const critic = routedCritic.result
+  if (routedCritic.deadline || planningExpired()) return deadlineBlocker('tactical-critic')
+  if (!critic || critic.route_status !== 'OK') {
+    return {
+      status: 'BLOCKED',
+      route_plan: null,
+      material_questions: [],
+      blocker: `PROVIDER_BLOCKED:tactical-critic:${critic?.route_error || 'no valid result'}`,
+      discovery,
+      architecture_envelope: architecture.architecture_envelope,
+    }
+  }
+  if (critic.verdict === 'PASS' && !critic.material_questions.length) {
+    routePlan.planning.critic_route = routedCritic.route
     return {
       status: 'PLAN_READY',
       route_plan: routePlan,
       material_questions: [],
       blocker: null,
-      architecture_envelope: draft.architecture_envelope,
+      architecture_envelope: architecture.architecture_envelope,
       discovery,
-      grill: grillResults,
+      macro_grill: macroGrill,
       critic,
-      rounds: round,
+      macro_rounds: macroRounds,
+      tactical_corrections: tacticalCorrection,
+      elapsed_ms: Date.now() - STARTED_AT,
     }
   }
-  const criticFindings = [
-    ...(critic?.findings || []),
-    ...(critic?.material_questions || []),
-  ]
-  if (!criticFindings.length) {
-    criticFindings.push('independent critic returned no valid PASS result')
-  }
-  const criticFingerprint = fingerprint(criticFindings)
-  if (seenFindings.has(criticFingerprint)) {
-    if (planningTier === 'frontier') {
-      return {
-        status: 'BLOCKED',
-        route_plan: null,
-        material_questions: [],
-        blocker: 'frontier critic repeated the same unresolved material findings',
-        discovery,
-        grill: grillResults,
-        critic,
-      }
+  if (critic.material_questions.length) {
+    return {
+      status: 'AWAITING_USER_DECISION',
+      route_plan: null,
+      material_questions: critic.material_questions,
+      blocker: null,
+      discovery,
+      architecture_envelope: architecture.architecture_envelope,
     }
-    revisionEvidence.push({
-      source: 'critic-repeat-escalation',
-      round,
-      findings: criticFindings,
-      report: critic,
-    })
-    planningTier = nextTier(planningTier)
-    round += 1
-    continue
   }
-  seenFindings.add(criticFingerprint)
-  revisionEvidence.push({ source: 'critic', round, findings: criticFindings, report: critic })
-  planningTier = tierAfterCorrection(planningTier)
-  round += 1
+  if (critic.finding_type === 'COMPILER') {
+    return {
+      status: 'BLOCKED',
+      route_plan: null,
+      material_questions: [],
+      blocker: `BLOCKED_COMPILER:${critic.findings.join(' | ') || critic.summary}`,
+      discovery,
+      architecture_envelope: architecture.architecture_envelope,
+    }
+  }
+  if (critic.finding_type === 'EXTERNAL') {
+    return {
+      status: 'BLOCKED',
+      route_plan: null,
+      material_questions: [],
+      blocker: `EXTERNAL:${critic.findings.join(' | ') || critic.summary}`,
+      discovery,
+      architecture_envelope: architecture.architecture_envelope,
+    }
+  }
+  if (tacticalCorrection >= MAX_TACTICAL_CORRECTIONS) {
+    return {
+      status: 'BLOCKED',
+      route_plan: null,
+      material_questions: [],
+      blocker: `TACTICAL_LIMIT:one correction exhausted:${critic.findings.join(' | ') || critic.summary}`,
+      discovery,
+      architecture_envelope: architecture.architecture_envelope,
+    }
+  }
+  tacticalEvidence = [{
+    finding_type: 'TACTICAL',
+    findings: critic.findings,
+    summary: critic.summary,
+  }]
+  tacticalCorrection += 1
+}
+
+return {
+  status: 'BLOCKED',
+  route_plan: null,
+  material_questions: [],
+  blocker: 'TACTICAL_LIMIT:planning exited without an executable near-wave plan',
+  discovery,
+  architecture_envelope: architecture.architecture_envelope,
 }

@@ -97,7 +97,29 @@ jq '
       "bash": ($commands | allow_rtk_variants),
       "edit": $edit
     };
-  .agent["router-review"] = {
+  .provider.router_litellm.models = ((.provider.router_litellm.models // {}) + {
+    "deepseek/deepseek-v4-flash": {"name": "Corporate DeepSeek V4 Flash"},
+    "cloudru/DeepSeek-V4-Pro": {"name": "Corporate DeepSeek V4 Pro"},
+    "cloudru/Qwen3-Coder-Next": {"name": "Corporate Qwen3 Coder Next"},
+    "cloudru/MiniMax-M3": {"name": "Corporate MiniMax M3"},
+    "cloudru/GLM-5.1": {"name": "Corporate GLM 5.1"}
+  })
+  | .provider.router_minimax.models = ((.provider.router_minimax.models // {}) + {
+    "MiniMax-M2.7": {"name": "MiniMax M2.7"},
+    "MiniMax-M2.7-highspeed": {"name": "MiniMax M2.7 Highspeed"},
+    "MiniMax-M3": {"name": "MiniMax M3"}
+  })
+  | .provider.router_deepseek.models = ((.provider.router_deepseek.models // {}) + {
+    "deepseek-v4-flash": {"name": "DeepSeek V4 Flash"},
+    "deepseek-v4-pro": {"name": "DeepSeek V4 Pro"}
+  })
+  | .provider.router_openrouter.models = ((.provider.router_openrouter.models // {}) + {
+    "deepseek/deepseek-v4-flash": {"name": "OpenRouter DeepSeek V4 Flash"},
+    "deepseek/deepseek-v4-pro": {"name": "OpenRouter DeepSeek V4 Pro"},
+    "moonshotai/kimi-k3": {"name": "OpenRouter Kimi K3"}
+  })
+  | del(.provider.router_openrouter.models["qwen/qwen3-coder-next"])
+  | .agent["router-review"] = {
     "description": "Minimal read-only routed worker",
     "mode": "primary",
     "prompt": "Inspect only the bounded task and current worktree. Never edit files or expand scope. Use RTK-prefixed shell commands when RTK supports the command. Return concise evidence and uncertainty.",

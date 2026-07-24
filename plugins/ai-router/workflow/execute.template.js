@@ -104,6 +104,26 @@ const DIAGNOSIS_SCHEMA = {
   },
 }
 
+const EVIDENCE_SCHEMA = {
+  type: 'object', additionalProperties: false,
+  required: [
+    'status', 'summary', 'failure_signature', 'evidence', 'log_path',
+    'route_status', 'route_error',
+  ],
+  properties: {
+    status: { type: 'string', enum: ['SUMMARIZED', 'BLOCKED'] },
+    summary: { type: 'string' },
+    failure_signature: { type: ['string', 'null'] },
+    evidence: { type: 'array', items: { type: 'string' } },
+    log_path: { type: ['string', 'null'] },
+    route_status: {
+      type: 'string',
+      enum: ['OK', 'UNAVAILABLE', 'TIMED_OUT', 'MALFORMED'],
+    },
+    route_error: { type: ['string', 'null'] },
+  },
+}
+
 const CALIBRATION_SCHEMA = {
   type: 'object', additionalProperties: false,
   required: [
@@ -159,23 +179,54 @@ function rolePhase(role) {
   if (role === 'verifier' || role === 'test-intent-verifier' || role === 'final-gate') {
     return role === 'final-gate' ? 'Final gate' : 'Verify'
   }
+  if (role === 'log-summarizer' || role === 'failure-triage') return 'Triage'
   if (role === 'frontier-replanner' || role === 'repair' || role === 'diagnostician') return 'Escalate'
   return 'Execute'
 }
 
 function routeCapability(route) {
-  if (['codex-sol', 'codex-high', 'claude-opus', 'claude-best', 'kimi-k3'].includes(route)) return 3
-  if (['corporate-pro', 'codex-terra', 'codex', 'claude-sonnet'].includes(route)) return 2
+  if ([
+    'codex-sol', 'codex-high', 'claude-opus', 'claude-best',
+    'openrouter-deepseek-frontier', 'kimi-k3',
+  ].includes(route)) return 3
+  if ([
+    'corporate-pro', 'corporate-qwen', 'corporate-minimax', 'corporate-glm',
+    'minimax-m3', 'deepseek-pro', 'openrouter-deepseek',
+    'codex-terra', 'codex', 'claude-sonnet',
+  ].includes(route)) return 2
   return 1
 }
 
 function providerGroup(route) {
   if (route.startsWith('codex')) return 'openai-subscription'
   if (route.startsWith('claude')) return 'anthropic-subscription'
-  if (route === 'corporate-pro') return 'corporate-litellm'
-  if (route === 'minimax') return 'minimax'
-  if (route === 'cheap') return 'deepseek'
+  if (route.startsWith('corporate')) return 'corporate-litellm'
+  if (route.startsWith('minimax')) return 'minimax'
+  if (route === 'cheap' || route === 'deepseek-pro') return 'deepseek'
   return 'openrouter'
+}
+
+function routeSeed(value) {
+  return [...value].reduce(
+    (total, character) => (total + character.charCodeAt(0)) % 65536,
+    0,
+  )
+}
+
+function evidenceRoutes(task, attempt) {
+  const seed = routeSeed(`${PLAN.workflow_id}:${task.id}:${attempt}`)
+  return [
+    'minimax-fast',
+    'openrouter-cheap',
+    'cheap',
+    'corporate-flash',
+    'codex-luna',
+  ].sort((left, right) => {
+    const leftCalls = Number(PLAN.planning.route_usage?.[left] || 0)
+    const rightCalls = Number(PLAN.planning.route_usage?.[right] || 0)
+    if (leftCalls !== rightCalls) return leftCalls - rightCalls
+    return routeSeed(`${seed}:${left}`) - routeSeed(`${seed}:${right}`)
+  })
 }
 
 function statusFromRouter(status) {
@@ -415,6 +466,60 @@ async function runVerifier(route, task, workerRoute, workerResult, attempt, fina
     : runExternalVerifier(route, task, workerRoute, workerResult, attempt, finalGate, verificationRole)
 }
 
+async function runEvidenceSummarizer(task, failureEvidence, attempt) {
+  const routes = evidenceRoutes(task, attempt)
+  const attempts = []
+  for (let index = 0; index < Math.min(routes.length, 3); index += 1) {
+    const route = routes[index]
+    const prompt = [
+      'Act as a bounded failure-evidence summarizer, not a root-cause diagnostician.',
+      `Working directory: ${PLAN.working_directory}`,
+      `Task objective: ${task.objective}`,
+      `Structured non-green evidence: ${JSON.stringify(failureEvidence)}`,
+      'Read only the explicitly cited log_path files when their bounded excerpts are insufficient.',
+      'Do not edit, rerun tests, inspect unrelated code, propose a fix, or dismiss failures as pre-existing.',
+      'Return the stable failure signature, exact errors, relevant log facts, and a compact lossless summary for a separate strong diagnostician.',
+      'Set route_status=OK and route_error=null only for a valid completed summary.',
+    ].join('\n\n')
+    const args = {
+      ...delegationArgs(
+        route,
+        'log-summarizer',
+        `${task.id}-evidence-${attempt}-${index + 1}`.slice(0, 64),
+        'review',
+        prompt,
+      ),
+      timeout_seconds: 300,
+    }
+    const wrapperPrompt = [
+      'You are a transparent one-generation AI Router evidence wrapper.',
+      `Call ${DELEGATE_TOOL} EXACTLY ONCE with the JSON below.`,
+      'Do not inspect logs, diagnose, edit, or retry yourself.',
+      'Map a valid delegated JSON object into the requested schema with route_status=OK.',
+      'For unavailable, timed-out, or malformed output, return status=BLOCKED, preserve the exact cause in route_error, and set route_status accordingly.',
+      '',
+      JSON.stringify(args),
+    ].join('\n')
+    const result = await agent(wrapperPrompt, {
+      label: `log-summarizer:${task.id}:${route}:a${attempt}:f${index + 1}`,
+      phase: 'Triage',
+      schema: EVIDENCE_SCHEMA,
+      model: 'haiku',
+      agentType: 'ai-router:external-worker',
+      maxTurns: 4,
+    })
+    attempts.push({ route, result })
+    if (result?.route_status === 'OK' && result?.status === 'SUMMARIZED') {
+      return { route, result, attempts }
+    }
+  }
+  return {
+    route: attempts[attempts.length - 1]?.route || routes[0],
+    result: null,
+    attempts,
+  }
+}
+
 async function runExternalDiagnosis(route, task, failureEvidence, attempt) {
   const prompt = [
     'You are a strong read-only root-cause diagnostician. Do not edit files and do not rerun tests.',
@@ -632,7 +737,17 @@ function nextRepairIndex(routes, currentIndex, diagnosis) {
 }
 
 async function diagnoseOrScope(task, failure, attempt) {
-  const diagnosis = await runDiagnosis(task, failure, attempt)
+  const evidenceSummary = await runEvidenceSummarizer(task, failure, attempt)
+  const diagnosis = await runDiagnosis(
+    task,
+    {
+      raw_failure: failure,
+      routed_evidence_summary: evidenceSummary.result,
+      summarizer_route: evidenceSummary.route,
+      summarizer_attempts: evidenceSummary.attempts,
+    },
+    attempt,
+  )
   if (diagnosis.result?.status !== 'DIAGNOSED') {
     return {
       terminal: {
@@ -640,8 +755,10 @@ async function diagnoseOrScope(task, failure, attempt) {
         task_id: task.id,
         blocker: diagnosis.result?.blocker || 'all strong/frontier diagnosticians failed to establish a repair path',
         diagnosis,
+        evidence_summary: evidenceSummary,
       },
       diagnosis,
+      evidenceSummary,
     }
   }
   if (diagnosis.result.scope_status === 'OUT_OF_SCOPE') {
@@ -652,11 +769,13 @@ async function diagnoseOrScope(task, failure, attempt) {
         blocker: 'the diagnosed repair requires paths outside the approved scope',
         requested_paths: diagnosis.result.suspected_paths,
         diagnosis,
+        evidence_summary: evidenceSummary,
       },
       diagnosis,
+      evidenceSummary,
     }
   }
-  return { terminal: null, diagnosis }
+  return { terminal: null, diagnosis, evidenceSummary }
 }
 
 async function runTask(task) {
@@ -696,7 +815,13 @@ async function runTask(task) {
       }
     }
     const diagnosed = await diagnoseOrScope(task, evaluation.failure, attempt)
-    evidence.push({ route: workerRoute, worker, failure: evaluation.failure, diagnosis: diagnosed.diagnosis })
+    evidence.push({
+      route: workerRoute,
+      worker,
+      failure: evaluation.failure,
+      evidence_summary: diagnosed.evidenceSummary,
+      diagnosis: diagnosed.diagnosis,
+    })
     if (diagnosed.terminal) return { ...diagnosed.terminal, evidence }
     objective = [
       task.objective,
@@ -748,7 +873,14 @@ async function runTask(task) {
       }
     }
     const diagnosed = await diagnoseOrScope(task, evaluation.failure, attempt)
-    evidence.push({ frontier_cycle: cycle, replan, worker, failure: evaluation.failure, diagnosis: diagnosed.diagnosis })
+    evidence.push({
+      frontier_cycle: cycle,
+      replan,
+      worker,
+      failure: evaluation.failure,
+      evidence_summary: diagnosed.evidenceSummary,
+      diagnosis: diagnosed.diagnosis,
+    })
     if (diagnosed.terminal) return { ...diagnosed.terminal, evidence }
   }
 }
@@ -823,7 +955,13 @@ function chooseCalibrationRoute(taskResults) {
       .filter(Boolean)
       .map(providerGroup),
   )
-  return ['corporate-pro', 'codex-terra', 'claude-sonnet']
+  return [
+    'corporate-glm',
+    'minimax-m3',
+    'openrouter-deepseek',
+    'codex-terra',
+    'claude-sonnet',
+  ]
     .find((route) => !workerProviders.has(providerGroup(route))) || 'codex-terra'
 }
 
@@ -855,7 +993,7 @@ async function calibrateWave(completedIds, pending, taskResults, wave) {
     }
   }
 
-  const frontierRoutes = ['codex-sol', 'claude-opus']
+  const frontierRoutes = ['claude-best', 'openrouter-deepseek-frontier']
   const frontier = await parallel(frontierRoutes.map((route) => () =>
     runCalibrationRoute(
       route,

@@ -3,20 +3,31 @@
 AI Router turns multi-model coding delegation into a visible Claude Code Dynamic Workflow:
 
 - one adaptive entry point that compiles a visible planning graph from a rough task;
-- risk-gated adversarial grill for strong/frontier plans, skipped for routine work;
-- two independent frontier planning agents before execution;
+- macro architecture validation before any tactical detail;
+- only the next one or two tasks detailed at a time;
+- a 30-minute planning deadline, one macro repair, and one tactical repair;
+- risk-gated adversarial grill for strong/frontier architecture;
 - one digest-bound route plan and one native execution approval card;
 - one inspectable workflow agent for every model call;
 - a workflow-only controller hook that blocks silent serial fallback;
 - compact/resume recovery from durable MCP state;
 - batched deterministic test-suite nodes with per-command evidence, plus independent verification after every worker;
-- strong root-cause diagnosis before repair;
+- visible low-cost log compression before strong root-cause diagnosis;
 - escalation from routine to strong and frontier models;
 - reset to the appropriate initial tier for each new task;
 - zero tolerance for pre-existing, flaky, timed-out, or otherwise failing tests;
 - routed token and known API-cost accounting.
 
-Supported routes are native Claude workers, the official Codex subscription client, corporate LiteLLM, MiniMax, direct DeepSeek, and OpenRouter backup. The planner selects both model tier and reasoning effort: Claude Haiku/Sonnet/Opus and Codex Luna/Terra/Sol map to routine/strong/frontier work, with low/medium/high effort where the client supports it. At the hardest Claude step, the `best` alias selects Fable when the account has access and otherwise Opus. Every escalation ladder ends at a frontier model. Kimi K3 remains confirmation- and budget-gated. Antigravity is deliberately excluded.
+Supported routes are native Claude workers, the official Codex subscription
+client, corporate LiteLLM, MiniMax, direct DeepSeek, and OpenRouter as an active
+metered pool. Low-cost models handle discovery, dependency mapping, test
+inventory, and log evidence. Strong and frontier roles remain
+provider-independent. Claude Haiku/Sonnet/Opus and Codex Luna/Terra/Sol map to
+routine/strong/frontier work, with low/medium/high effort where the client
+supports it. At the hardest Claude step, the `best` alias selects Fable when
+the account has access and otherwise Opus. Every escalation ladder ends at a
+frontier model. Kimi K3 remains confirmation- and budget-gated. Antigravity is
+deliberately excluded.
 
 ## Install the Claude plugin
 
@@ -43,9 +54,10 @@ Start a new Claude session, then run:
 
 `/ai-router:start-workflow` first performs a free local inspection and
 zero-token risk classification, then compiles one registered Planning Workflow
-containing only the needed discovery, an adaptive Haiku/Sonnet/Opus planner,
-risk-gated grillers, and an independent tier-appropriate critic. A planner that
-finds higher risk visibly escalates to the next tier. Routine plans skip grill.
+containing only the needed discovery, a macro architecture draft, independent
+architecture grill, a near-wave plan for one or two tasks, and an independent
+critic. Corporate LiteLLM, MiniMax, DeepSeek, OpenRouter, Codex, and Claude
+receive explicit roles instead of sitting behind a passive backup chain.
 MCP verifies the returned RoutePlan digest
 before compiling the registered Execution Workflow. Use
 `/ai-router:workflow <precise software task>` as the expert fast path.
@@ -55,7 +67,9 @@ deterministic checks, calibrators, diagnosticians, verifiers, repairs, prompts,
 results, time, and Claude tokens. While a router session is active, plugin
 hooks reject direct main-session `Bash`/edits/model delegation, inline workflow
 scripts, and script digest changes. Compact and resume restore the exact
-controller action from durable state.
+controller action from durable state. After a plugin upgrade, ordinary
+“continue” detects an old workflow protocol and recompiles the registered graph
+inside the same session.
 Use `/ai-router:usage` for routed external usage and known API cost.
 
 Claude's auto mode may accept the Workflow card through its classifier. Switch out of auto mode before launch when you want a mandatory manual click.
